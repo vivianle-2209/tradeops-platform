@@ -134,11 +134,6 @@ def load_trade_records(
 
 @st.cache_data(ttl=15, show_spinner=False)
 def load_jira_incidents() -> pd.DataFrame:
-    """
-    Load Jira incident metadata exposed by the
-    n8n TradeOps Incident API.
-    """
-
     try:
         url = st.secrets["N8N_INCIDENT_API_URL"]
 
