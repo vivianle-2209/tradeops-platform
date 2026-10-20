@@ -7,5 +7,7 @@ data/raw/
 data/cleaned/
 data/processed/
 
-.agents\skills/developing-with-streamlit
-.claude\skills/developing-with-streamlit
+.agents\skills
+.claude\skills
+
+.streamlit/secrets.toml

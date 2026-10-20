@@ -17,6 +17,7 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
+import requests
 import streamlit as st
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -99,19 +100,165 @@ def load_tables(version: float) -> dict:
 
 
 @st.cache_data(ttl=60, show_spinner=False, max_entries=256)
-def load_trade_records(trade_id: str, version: float) -> tuple[pd.DataFrame, pd.DataFrame]:
+def load_trade_records(
+    trade_id: str,
+    version: float,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Execution and clearing source records for one trade."""
-    execution = run_query("SELECT * FROM executions WHERE trade_id = ?", [trade_id])
-    clearing = run_query("SELECT * FROM clearing_records WHERE trade_id = ?", [trade_id])
-    return (
-        parse_timestamps(execution, ["execution_timestamp"]),
-        parse_timestamps(clearing, ["clearing_timestamp"]),
+
+    execution = run_query(
+        "SELECT * FROM executions WHERE trade_id = ?",
+        [trade_id],
     )
+
+    clearing = run_query(
+        "SELECT * FROM clearing_records WHERE trade_id = ?",
+        [trade_id],
+    )
+
+    return (
+        parse_timestamps(
+            execution,
+            ["execution_timestamp"],
+        ),
+        parse_timestamps(
+            clearing,
+            ["clearing_timestamp"],
+        ),
+    )
+
+
+# --------------------------------------------------
+# Jira / n8n incident API
+# --------------------------------------------------
+
+@st.cache_data(ttl=15, show_spinner=False)
+def load_jira_incidents() -> pd.DataFrame:
+    """
+    Load Jira incident metadata exposed by the
+    n8n TradeOps Incident API.
+    """
+
+    try:
+        url = st.secrets["N8N_INCIDENT_API_URL"]
+
+        response = requests.get(
+            url,
+            timeout=10,
+        )
+
+        response.raise_for_status()
+
+        payload = response.json()
+
+        if not payload:
+            return pd.DataFrame()
+
+        incidents = pd.DataFrame(payload)
+
+        expected_columns = [
+            "dedup_key",
+            "break_id",
+            "trade_id",
+            "break_type",
+            "severity",
+            "status",
+            "jira_issue_key",
+            "jira_issue_url",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+
+        for column in expected_columns:
+            if column not in incidents.columns:
+                incidents[column] = pd.NA
+
+        incidents = parse_timestamps(
+            incidents,
+            [
+                "first_seen_at",
+                "last_seen_at",
+            ],
+        )
+
+        return incidents
+
+    except Exception:
+        return pd.DataFrame()
+
+
+def attach_jira_incidents(
+    breaks: pd.DataFrame,
+    incidents: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Attach Jira incident metadata to TradeOps
+    breaks using dedup_key.
+    """
+
+    result = breaks.copy()
+
+    jira_columns = [
+        "jira_issue_key",
+        "jira_issue_url",
+        "jira_status",
+        "jira_first_seen_at",
+        "jira_last_seen_at",
+    ]
+
+    if incidents.empty:
+        for column in jira_columns:
+            if column not in result.columns:
+                result[column] = pd.NA
+
+        return result
+
+    incident_view = incidents[
+        [
+            "dedup_key",
+            "jira_issue_key",
+            "jira_issue_url",
+            "status",
+            "first_seen_at",
+            "last_seen_at",
+        ]
+    ].copy()
+
+    incident_view = incident_view.rename(
+        columns={
+            "status": "jira_status",
+            "first_seen_at": "jira_first_seen_at",
+            "last_seen_at": "jira_last_seen_at",
+        }
+    )
+
+    incident_view = (
+        incident_view
+        .sort_values(
+            "jira_last_seen_at",
+            ascending=False,
+            na_position="last",
+        )
+        .drop_duplicates(
+            subset=["dedup_key"],
+            keep="first",
+        )
+    )
+
+    result = result.merge(
+        incident_view,
+        on="dedup_key",
+        how="left",
+        validate="many_to_one",
+    )
+
+    return result
 
 
 def clear_caches() -> None:
     load_tables.clear()
     load_trade_records.clear()
+    load_jira_incidents.clear()
 
 
 def load_data() -> tuple[dict | None, str, str | None]:
