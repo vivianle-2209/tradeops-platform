@@ -1,0 +1,41 @@
+# TradeOps visual identity: white workspace, black sidebar, pink accent.
+# Streamlit reads this file from the directory you run `streamlit run` in,
+# so launch the dashboard from the project root.
+
+[theme]
+base = "light"
+primaryColor = "#FF4FA3"
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F5F5F6"
+textColor = "#111111"
+borderColor = "#E8E8E8"
+linkColor = "#D81B7A"
+codeBackgroundColor = "#F5F5F6"
+font = "Inter:https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+codeFont = "'JetBrains Mono':https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap"
+baseFontSize = 14
+baseRadius = "10px"
+buttonRadius = "8px"
+showWidgetBorder = true
+showSidebarBorder = false
+headingFontSizes = ["26px", "20px", "16px", "14px", "13px", "12px"]
+headingFontWeights = [700, 700, 600, 600, 600, 600]
+paddingTop = "1.25rem"
+paddingBottom = "2.5rem"
+chartCategoricalColors = ["#111111", "#FF4FA3", "#999999", "#FFD6EA", "#555555", "#D81B7A", "#CCCCCC"]
+dataframeHeaderBackgroundColor = "#111111"
+dataframeHeaderTextColor = "#FFFFFF"
+dataframeBorderColor = "#E8E8E8"
+
+[theme.sidebar]
+backgroundColor = "#111111"
+secondaryBackgroundColor = "#1E1E1E"
+codeBackgroundColor = "#1E1E1E"
+textColor = "#F2F2F2"
+borderColor = "#2E2E2E"
+primaryColor = "#FF4FA3"
+linkColor = "#FF8CC4"
+paddingTop = "1rem"
+
+[server]
+runOnSave = true
