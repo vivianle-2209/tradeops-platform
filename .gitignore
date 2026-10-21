@@ -1,10 +1,23 @@
+# Environment
 .env
 .venv/
 __pycache__/
 *.pyc
 
+# Streamlit secrets
 .streamlit/secrets.toml
 
+# VS Code local settings
+.vscode/
+
+# Logs
 logs/
 
+# Generated pipeline data
+data/raw/
+data/cleaned/
+data/processed/
+data/state/
+
+# DuckDB temporary files
 *.duckdb.wal
