@@ -2,47 +2,63 @@
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/)
 
-TradeOps is an end-to-end trading operations analytics and exception-management platform that simulates post-trade reconciliation, detects operational breaks, scores exception severity, monitors SLA exposure, and escalates high-severity incidents into Jira through an n8n automation workflow.
+TradeOps is an end-to-end post-trade operations platform that simulates execution-to-clearing reconciliation, detects operational breaks, prioritises exceptions using deterministic severity and SLA rules, and escalates high-risk incidents through n8n and Jira.
 
-The project is designed to reproduce core workflows found in trading operations, middle-office, and post-trade exception-management environments while keeping deterministic operational logic separate from AI-assisted triage.
-
----
+The project was built to explore how trading operations, exception management, workflow automation, data engineering, and operational analytics fit together in a realistic end-to-end system.
 
 ## Live Demo
 
-### Streamlit Dashboard
+**Streamlit dashboard**
 
 https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/
 
-> The deployed dashboard may require Streamlit access depending on deployment settings.
+The deployed application is backed by a scheduled GitHub Actions pipeline that refreshes the operational data automatically.
 
 ---
 
-# Project Objectives
+## What the Platform Does
 
-TradeOps demonstrates how an operational trading workflow can be designed from market-data ingestion through incident escalation.
+TradeOps models a simplified post-trade workflow:
 
-The platform:
+```text
+Market Trade
+    ↓
+Execution Record
+    ↓
+Clearing Record
+    ↓
+Reconciliation
+    ↓
+Exception Detection
+    ↓
+Severity + SLA Assessment
+    ↓
+Operational Dashboard
+    ↓
+HIGH / CRITICAL Escalation
+    ↓
+n8n
+    ↓
+Jira Incident
+```
 
-- retrieves historical equity trade data
-- supports multiple securities
-- normalizes raw market-data records
-- constructs internal execution records
-- generates synthetic downstream clearing records
-- injects controlled operational errors
-- reconciles execution and clearing data
-- detects post-trade exceptions
-- scores exception severity quantitatively
-- tracks SLA exposure
-- preserves break lifecycle state
-- surfaces operational risk through Streamlit
-- routes HIGH and CRITICAL incidents to n8n
-- uses AI for root-cause triage
-- prevents duplicate Jira incidents
-- exposes escalated incidents back to the dashboard
-- maintains an operational audit trail
+The platform currently supports:
 
-The project focuses on system design, controls, exception handling, automation, and operational analytics rather than replicating a production brokerage or clearinghouse exactly.
+- multi-symbol US equity market-data ingestion
+- execution record construction
+- synthetic clearing generation
+- controlled break injection
+- deterministic reconciliation
+- trade-break classification
+- quantitative severity scoring
+- SLA monitoring
+- persistent break lifecycle tracking
+- duplicate-dispatch prevention
+- DuckDB analytical storage
+- Streamlit operational dashboards
+- n8n workflow automation
+- Jira incident escalation
+- scheduled cloud execution using GitHub Actions
 
 ---
 
@@ -56,167 +72,170 @@ The project focuses on system design, controls, exception handling, automation, 
                                     │
                                     ▼
                          ┌──────────────────────┐
-                         │     Ingestion        │
-                         │   Multiple Symbols   │
+                         │      Ingestion       │
+                         │   Multi-Symbol Data  │
                          └──────────┬───────────┘
                                     │
                                     ▼
                          ┌──────────────────────┐
-                         │    Data Cleaning     │
-                         │ Normalized Trade Set │
+                         │     Cleaning         │
+                         │  Normalised Trades   │
                          └──────────┬───────────┘
                                     │
                                     ▼
                          ┌──────────────────────┐
                          │ Execution Enrichment │
-                         │ Account / Side / ID  │
                          └──────────┬───────────┘
                                     │
                                     ▼
                          ┌──────────────────────┐
                          │ Synthetic Clearing   │
-                         │ + Controlled Errors  │
+                         │ + Injected Failures  │
                          └──────────┬───────────┘
                                     │
                                     ▼
                          ┌──────────────────────┐
                          │   Reconciliation     │
-                         │   Exception Engine   │
+                         │  Exception Detection │
                          └──────────┬───────────┘
                                     │
                                     ▼
-                    ┌──────────────────────────────┐
-                    │ Severity + SLA + Lifecycle   │
-                    └──────────────┬───────────────┘
+                     ┌───────────────────────────┐
+                     │ Severity + SLA + Lifecycle│
+                     └─────────────┬─────────────┘
                                    │
-                  ┌────────────────┴────────────────┐
-                  │                                 │
-                  ▼                                 ▼
-       ┌──────────────────────┐          ┌──────────────────────┐
-       │       DuckDB         │          │        n8n           │
-       │ Operational Storage  │          │ Automation Workflow  │
-       └──────────┬───────────┘          └──────────┬───────────┘
-                  │                                 │
-                  ▼                                 ▼
-       ┌──────────────────────┐          ┌──────────────────────┐
-       │      Streamlit       │          │ AI Root-Cause Triage │
-       │   Ops Dashboard      │          └──────────┬───────────┘
-       └──────────────────────┘                     │
+                   ┌───────────────┴────────────────┐
+                   │                                │
+                   ▼                                ▼
+        ┌──────────────────────┐        ┌──────────────────────┐
+        │       DuckDB         │        │        n8n           │
+        │ Operational Storage  │        │ Workflow Automation  │
+        └──────────┬───────────┘        └──────────┬───────────┘
+                   │                               │
+                   ▼                               ▼
+        ┌──────────────────────┐        ┌──────────────────────┐
+        │      Streamlit       │        │ AI-Assisted Triage   │
+        │  Operations Dashboard│        └──────────┬───────────┘
+        └──────────────────────┘                   │
                                                    ▼
                                         ┌──────────────────────┐
-                                        │  Deduplication Gate  │
+                                        │ Deduplication / Gate │
                                         └──────────┬───────────┘
                                                    │
                                                    ▼
                                         ┌──────────────────────┐
                                         │        Jira          │
-                                        │ Incident Escalation  │
+                                        │ Incident Management  │
                                         └──────────────────────┘
 ```
 
 ---
 
-# Market Universe
+# Deployment Architecture
 
-TradeOps supports multiple US equity symbols in a single processing run.
-
-The current test universe includes:
-
-- AAPL
-- AMZN
-- GOOGL
-- META
-- MSFT
-- NVDA
-- TSLA
-
-The universe is configurable in `src/ingestion.py`.
-
-Example:
-
-```python
-SYMBOLS = [
-    "MSFT",
-    "AAPL",
-    "NVDA",
-    "AMZN",
-    "META",
-    "GOOGL",
-    "TSLA",
-]
-```
-
----
-
-# End-to-End Processing Flow
+The deployed project separates the **backend pipeline** from the **frontend dashboard**.
 
 ```text
-Alpaca Market Data
-        ↓
-Raw Trades
-        ↓
-Cleaned Trades
-        ↓
-Execution Enrichment
-        ↓
-Synthetic Clearing Records
-        ↓
-Reconciliation
-        ↓
-Trade-Break Detection
-        ↓
-Severity Scoring
-        ↓
-SLA Processing
-        ↓
-Lifecycle Management
-        ↓
-DuckDB
-        ↓
-Streamlit Dashboard
-        ↓
-HIGH / CRITICAL Dispatch
-        ↓
-n8n
-        ↓
-AI Root-Cause Triage
-        ↓
-Deduplication
-        ↓
-Jira
+GitHub Actions
+    │
+    │ scheduled every 30 minutes
+    ▼
+run_pipeline.py
+    │
+    ├── fetch market data
+    ├── build executions
+    ├── generate clearing
+    ├── reconcile
+    ├── score severity
+    ├── calculate SLA
+    ├── update lifecycle
+    ├── dispatch eligible incidents
+    └── rebuild DuckDB
+    │
+    ▼
+data/tradeops.duckdb
+    │
+    ▼
+GitHub repository
+    │
+    ▼
+Streamlit Community Cloud
 ```
 
-The entire Python pipeline can be executed with:
+GitHub Actions acts as the scheduled **worker**, while Streamlit acts as the **presentation layer**.
 
-```bash
-python run_pipeline.py
-```
+This avoids making the dashboard responsible for running background jobs.
 
 ---
 
-# Core Components
+# Market Universe
 
-## 1. Market Data Ingestion
+The current test universe contains seven US equities:
 
-File:
+```text
+AAPL
+AMZN
+GOOGL
+META
+MSFT
+NVDA
+TSLA
+```
+
+The market universe is configurable in:
 
 ```text
 src/ingestion.py
 ```
 
-Historical trades are retrieved from the Alpaca Market Data API using the IEX feed.
+---
+
+# End-to-End Pipeline
+
+The entire pipeline is orchestrated through:
+
+```bash
+python run_pipeline.py
+```
+
+Current processing stages:
+
+```text
+1. Market Data Ingestion
+2. Data Cleaning
+3. Execution Enrichment
+4. Synthetic Clearing Generation
+5. Reconciliation
+6. Severity Scoring
+7. SLA + Lifecycle Processing
+8. DuckDB Loading
+9. n8n Dispatch
+```
+
+The pipeline uses structured logging and reports the status and duration of each stage.
+
+---
+
+# 1. Market Data Ingestion
+
+**File**
+
+```text
+src/ingestion.py
+```
+
+Trade data is retrieved from the Alpaca Market Data API using the IEX feed.
 
 The ingestion layer supports:
 
 - multiple symbols
-- configurable start time
-- configurable end time
-- configurable record limits
-- per-symbol reporting
-- API timeout handling
-- combined multi-symbol output
+- configurable time windows
+- API authentication through environment variables
+- per-symbol retrieval
+- combined output
+- request timeout handling
 
-Raw output:
+Output:
 
 ```text
 data/raw/market_trades_raw.csv
@@ -224,48 +243,35 @@ data/raw/market_trades_raw.csv
 
 ---
 
-## 2. Data Cleaning
+# 2. Data Cleaning
 
-File:
+**File**
 
 ```text
 src/cleaning.py
 ```
 
-The cleaning stage converts Alpaca's raw trade schema into a standardized internal format.
+Raw market records are converted into a standard internal TradeOps schema.
 
-Example mappings:
+The stage performs:
 
-| Alpaca | TradeOps |
-|---|---|
-| `i` | `market_trade_id` |
-| `p` | `price` |
-| `s` | `quantity` |
-| `t` | `execution_timestamp` |
-| `x` | `venue` |
-| `z` | `tape` |
-| `c` | `trade_conditions` |
-
-Cleaning includes:
-
-- timestamp normalization
+- timestamp parsing
 - numeric conversion
-- symbol normalization
-- venue normalization
+- symbol standardisation
+- venue standardisation
+- invalid-record filtering
 - duplicate removal
-- invalid-price filtering
-- invalid-quantity filtering
-- missing-field filtering
 - deterministic sorting
-- internal trade-ID creation
+- internal trade-ID generation
+- execution-notional calculation
 
-Example internal TradeOps identifier:
+Example internal ID:
 
 ```text
 TRD-000001
 ```
 
-Clean output:
+Output:
 
 ```text
 data/cleaned/market_trades_cleaned.csv
@@ -273,27 +279,30 @@ data/cleaned/market_trades_cleaned.csv
 
 ---
 
-## 3. Execution Enrichment
+# 3. Execution Enrichment
 
-File:
+**File**
 
 ```text
 src/enrich_executions.py
 ```
 
-Clean market trades are enriched into internal execution records.
+Clean market trades are transformed into internal execution records.
 
 Additional fields include:
 
-- Trade ID
-- Symbol
-- Side
-- Account
-- Trader ID
-- Order ID
-- Record Source
-- Currency
-- Venue
+```text
+trade_id
+symbol
+side
+account_id
+trader_id
+order_id
+venue
+currency
+execution_notional
+record_source
+```
 
 Output:
 
@@ -303,30 +312,32 @@ data/processed/executions.csv
 
 ---
 
-## 4. Synthetic Clearing Generation
+# 4. Synthetic Clearing
 
-File:
+**File**
 
 ```text
 src/generate_clearing.py
 ```
 
-Synthetic clearing records are created from execution records.
+Clearing records are generated from the execution population.
 
-Controlled errors are deliberately introduced so the reconciliation engine can be tested.
+Controlled operational failures are deliberately injected to test the downstream reconciliation and exception-management logic.
 
-Injected scenarios include:
+Example scenarios include:
 
-- quantity mismatch
-- price mismatch
-- side mismatch
-- account mismatch
-- currency mismatch
-- failed settlement
-- late clearing
-- missing clearing record
-- missing execution record
-- duplicate clearing record
+```text
+QUANTITY_MISMATCH
+PRICE_MISMATCH
+SIDE_MISMATCH
+ACCOUNT_MISMATCH
+CURRENCY_MISMATCH
+SETTLEMENT_FAILED
+LATE_CLEARING
+MISSING_CLEARING_RECORD
+MISSING_EXECUTION_RECORD
+DUPLICATE_CLEARING_RECORD
+```
 
 Output:
 
@@ -336,30 +347,23 @@ data/processed/clearing.csv
 
 ---
 
-# Reconciliation Engine
+# 5. Reconciliation Engine
 
-File:
+**File**
 
 ```text
 src/reconciliation.py
 ```
 
-The reconciliation engine compares execution and clearing records and identifies operational exceptions.
+The reconciliation engine compares execution and clearing records.
 
-Supported exception types:
+Each trade is classified as either:
 
 ```text
-MISSING_CLEARING_RECORD
-MISSING_EXECUTION_RECORD
-DUPLICATE_CLEARING_RECORD
-QUANTITY_MISMATCH
-PRICE_MISMATCH
-SIDE_MISMATCH
-ACCOUNT_MISMATCH
-CURRENCY_MISMATCH
-SETTLEMENT_FAILED
-LATE_CLEARING
+MATCHED
 ```
+
+or one or more operational exceptions.
 
 Outputs:
 
@@ -368,17 +372,11 @@ data/processed/reconciliation_results.csv
 data/processed/trade_breaks.csv
 ```
 
----
-
 ## Break Identity
 
-Each exception row receives a unique:
+Every exception receives a `break_id`.
 
-```text
-break_id
-```
-
-TradeOps also defines a canonical logical incident identity:
+A logical incident is identified using:
 
 ```text
 dedup_key = trade_id:exception_type
@@ -390,21 +388,21 @@ Example:
 TRD-000842:PRICE_MISMATCH
 ```
 
-This `dedup_key` is used across TradeOps and n8n to identify the same operational incident across multiple workflow runs.
+This key is reused by TradeOps and the downstream automation layer to identify the same incident across repeated pipeline runs.
 
 ---
 
-# Severity Scoring
+# 6. Deterministic Severity Scoring
 
-File:
+**File**
 
 ```text
 src/severity.py
 ```
 
-Each trade break receives a deterministic quantitative risk score between 0 and 100.
+TradeOps assigns a deterministic severity score to each break.
 
-Current thresholds:
+Severity levels:
 
 | Score | Severity |
 |---:|---|
@@ -413,13 +411,13 @@ Current thresholds:
 | 30–49 | MEDIUM |
 | 0–29 | LOW |
 
-Severity can consider factors such as:
+Scoring can incorporate:
 
 - exception type
 - affected notional
 - settlement failure
-- mismatch characteristics
-- clearing latency
+- mismatch magnitude
+- latency
 - operational impact
 
 Output:
@@ -428,9 +426,7 @@ Output:
 data/processed/trade_breaks_scored.csv
 ```
 
----
-
-## Deterministic Source of Truth
+## Source-of-Truth Principle
 
 TradeOps remains authoritative for:
 
@@ -440,21 +436,19 @@ severity
 severity_score
 ```
 
-The downstream AI workflow is not allowed to override these values.
-
-This design separates deterministic operational controls from probabilistic AI reasoning.
+AI is used to assist investigation and root-cause triage, but it cannot override deterministic operational classifications.
 
 ---
 
-# SLA Monitoring
+# 7. SLA Monitoring
 
-File:
+**File**
 
 ```text
 src/sla.py
 ```
 
-Each severity class is assigned an operational SLA.
+Each severity level receives an operational SLA.
 
 | Severity | SLA |
 |---|---:|
@@ -463,7 +457,7 @@ Each severity class is assigned an operational SLA.
 | MEDIUM | 60 minutes |
 | LOW | 240 minutes |
 
-Possible SLA states:
+Possible states include:
 
 ```text
 WITHIN_SLA
@@ -478,15 +472,15 @@ Output:
 data/processed/trade_breaks_sla.csv
 ```
 
-The dashboard can optionally re-age open incidents using a live SLA clock.
+The Streamlit dashboard can also re-age open incidents using the current wall-clock time.
 
 ---
 
-# Break Lifecycle
+# 8. Persistent Break Lifecycle
 
-TradeOps is designed to preserve incident lifecycle information across pipeline runs.
+TradeOps keeps lifecycle state across pipeline executions.
 
-Lifecycle fields include:
+Important fields include:
 
 ```text
 dedup_key
@@ -496,18 +490,11 @@ break_status
 resolved_at
 ```
 
-State is stored under:
-
-```text
-data/state/
-```
-
-Expected behavior:
+Lifecycle behaviour:
 
 ```text
 New break
-→ first_seen_at = now
-→ last_seen_at = now
+→ first_seen_at = current time
 → status = OPEN
 
 Same break appears again
@@ -516,18 +503,24 @@ Same break appears again
 
 Break disappears
 → status = RESOLVED
-→ resolved_at = now
+→ set resolved_at
 ```
 
-This prevents SLA age from resetting on each pipeline execution.
+Persistent state:
+
+```text
+data/state/break_lifecycle.csv
+```
+
+This prevents an unresolved break from becoming artificially “new” every time the pipeline runs.
 
 ---
 
-# Dispatch State
+# 9. Dispatch State & Deduplication
 
-TradeOps also supports persistent dispatch state so unchanged incidents are not repeatedly POSTed to n8n.
+TradeOps does not repeatedly send unchanged incidents to n8n.
 
-Example fields:
+Persistent dispatch state tracks fields such as:
 
 ```text
 dedup_key
@@ -540,29 +533,36 @@ dispatch_status
 last_dispatch_error
 ```
 
-A break is redispatched when:
+A break is dispatched when:
 
 - it is new
+- a previous dispatch failed
 - severity changes
 - SLA status changes
-- break status changes
-- a previous dispatch failed
+- break lifecycle status changes
 
 Unchanged events are skipped.
 
+Only active:
+
+```text
+HIGH
+CRITICAL
+```
+
+breaks are currently eligible for downstream escalation.
+
 ---
 
-# DuckDB Storage
+# 10. DuckDB Analytical Storage
 
-File:
+**File**
 
 ```text
 src/load_database.py
 ```
 
-Operational datasets are loaded into DuckDB.
-
-Database:
+Pipeline outputs are loaded into:
 
 ```text
 data/tradeops.duckdb
@@ -577,19 +577,21 @@ reconciliation_results
 trade_breaks
 ```
 
-DuckDB provides the analytical storage layer used by Streamlit.
+DuckDB provides a lightweight analytical store for the Streamlit application.
+
+The scheduled cloud pipeline refreshes the DuckDB snapshot and persists it back to the repository for the deployed dashboard.
 
 ---
 
-# Streamlit Dashboard
+# Streamlit Operations Dashboard
 
-Main entry point:
+**Entry point**
 
 ```text
 dashboard/app.py
 ```
 
-The application contains five core views:
+The application contains five primary views:
 
 ```text
 Overview
@@ -599,13 +601,9 @@ Trade Investigation
 Jira Incidents
 ```
 
----
-
 ## Overview
 
-The Overview page provides high-level trading-health metrics.
-
-Examples:
+Provides system-level trading-health metrics including:
 
 - Total Trades
 - Matched Trades
@@ -613,641 +611,213 @@ Examples:
 - Break Rate
 - Critical Breaks
 - Affected Notional
+- SLA Breaches
+- At-Risk Incidents
+- Average Break Age
+- Average Clearing Latency
+- Open Breaks
+
+It also provides symbol-level trading activity and exposure views.
 
 ---
 
 ## Global Market Scope
 
-Users can select securities at the top level of the dashboard.
-
-Example:
+The dashboard allows users to scope analysis by one or more symbols.
 
 ```text
-AAPL
-AMZN
-GOOGL
-META
-MSFT
-NVDA
-TSLA
+AAPL  AMZN  GOOGL  META  MSFT  NVDA  TSLA
 ```
 
-The selected scope can drive:
+The selected market scope propagates through:
 
 - KPI calculations
-- reconciliation totals
-- break counts
-- risk views
-- investigation results
+- reconciliation metrics
+- exception counts
+- risk analysis
+- investigation views
+- Jira incident filtering where symbol metadata is available
 
 ---
 
-## Trade Volume by Symbol
+## Exception Queue
 
-The Overview includes a stacked chart where:
+The Exception Queue acts as an operational worklist.
 
-```text
-Total Trades = Matched Trades + Broken Trades
-```
+Users can review breaks by:
 
-Visual convention:
-
-```text
-Black = Matched Trades
-Pink  = Broken Trades
-```
-
-The chart can show:
-
-- total trades per security
-- unique broken trades
-- matched-trade volume
-- break rate
-- total labels
-- hover-level operational detail
-
-A trade containing several exception rows is counted as one broken trade.
-
----
-
-# Exception Queue
-
-The Exception Queue provides a working view of active exceptions.
-
-Typical fields include:
-
-- Trade ID
-- Symbol
-- Exception Type
-- Severity
-- SLA Status
-- Break Status
-- Affected Notional
-- Age
-
-Available filters include:
-
-- severity
-- SLA status
-- break status
-- exception type
+- trade
 - symbol
-- venue
-- trade ID
+- exception type
+- severity
+- SLA state
+- break state
+- affected notional
 
-The queue respects global market scope.
-
----
-
-# SLA & Risk
-
-The SLA & Risk page focuses on operational urgency.
-
-Example metrics include:
-
-- Open Breaks
-- SLA Breached
-- At Risk
-- Critical Incidents
-
-Symbol-level analysis can include:
-
-| Metric | Meaning |
-|---|---|
-| Total Trades | Reconciled trade volume |
-| Broken Trades | Unique broken trades |
-| Break Rate | Broken / total |
-| SLA Breached | Incidents beyond SLA |
-
-This separates raw incident volume from true operational concentration.
+Individual trades can then be opened in the investigation view.
 
 ---
 
-# Trade Investigation
+## SLA & Risk
 
-The Trade Investigation page supports detailed drill-down into an individual trade.
+The SLA & Risk page focuses on operational exposure.
 
-Example:
+It provides views such as:
+
+- SLA-state distribution
+- severity distribution
+- break ageing
+- symbol-level risk
+- highest-risk breaks
+- exposure concentration
+- breached / at-risk queues
+
+---
+
+## Trade Investigation
+
+The investigation view provides drill-down into a single trade.
+
+It brings together:
 
 ```text
-Trade ID        Symbol       Break Type          Severity
-TRD-001842      NVDA         PRICE_MISMATCH      HIGH
+Execution Record
+Clearing Record
+Reconciliation Result
+Break Details
+Severity
+SLA
+Lifecycle
 ```
 
-Execution details can include:
-
-- account
-- side
-- quantity
-- price
-- currency
-- venue
-- execution timestamp
-
-Clearing details can include:
-
-- clearing quantity
-- clearing price
-- clearing account
-- clearing side
-- clearing currency
-- clearing status
-- clearing latency
-
-Exception details can include:
-
-- Break ID
-- Dedup Key
-- Exception Type
-- Severity
-- Severity Score
-- SLA Status
-- Affected Notional
-- First Seen
-- Last Seen
+This provides an auditable explanation of why a trade was classified as a break.
 
 ---
 
-# Jira Incidents
+# n8n + Jira Integration
 
-The Jira Incidents page surfaces incidents escalated through n8n.
-
-Fields can include:
-
-- Jira Issue Key
-- Trade ID
-- Symbol
-- Break Type
-- Severity
-- Jira Status
-- Jira Priority
-- Assignee
-- Jira URL
-- First Seen
-- Last Seen
-- Jira Updated At
-
-Direct links allow users to move from TradeOps into Jira.
-
----
-
-# n8n Automation
-
-TradeOps uses n8n Cloud for incident orchestration.
-
-Main workflow:
+**File**
 
 ```text
-Webhook
+src/send_to_n8n.py
+```
+
+Eligible incidents are sent to an n8n webhook.
+
+The payload includes:
+
+```text
+identity
+trade details
+reconciliation evidence
+financial exposure
+clearing information
+risk classification
+SLA information
+lifecycle information
+```
+
+n8n then performs downstream workflow automation including:
+
+```text
+TradeOps event
     ↓
-Normalize TradeOps Event
+Deduplication
     ↓
-AI Root-Cause Triage
+AI-assisted root-cause triage
     ↓
-Confidence Gate
+Confidence / control logic
     ↓
-Load Incident Registry
+Jira create or update
     ↓
-Find Open Jira Incidents
+Incident registry
     ↓
-Resolve Deduplication Decision
-    ↓
-Route Jira Action
-    ├── CREATE
-    │     ↓
-    │  Create Jira Incident
-    │     ↓
-    │  Register Incident
-    │
-    ├── COMMENT
-    │     ↓
-    │  Comment on Existing Jira Incident
-    │     ↓
-    │  Update Last Seen
-    │
-    └── LOG ONLY
-          ↓
-        Audit
+Audit trail
 ```
+
+TradeOps remains authoritative for deterministic exception and severity fields.
 
 ---
 
-# AI-Assisted Root-Cause Triage
+# Jira Incident Dashboard
 
-AI is used only for qualitative operational analysis.
+The Streamlit application also exposes an incident-registry view sourced from the n8n/Jira integration.
 
-Example output:
-
-```text
-likely_root_cause
-confidence
-recommended_action
-evidence
-```
-
-Example root-cause categories:
+The registry is designed to display:
 
 ```text
-CLEARING_OR_SETTLEMENT_FAILURE
-BOOKING_OR_ALLOCATION_MISMATCH
-REFERENCE_DATA_MISMATCH
-PRICE_CAPTURE_MISMATCH
-DUPLICATE_PROCESSING
-LATE_CLEARING
-MISSING_DOWNSTREAM_RECORD
-UNKNOWN_REQUIRES_REVIEW
+Jira Ticket
+Trade ID
+Symbol
+Break Type
+Severity
+TradeOps Status
+Jira Status
+Jira Priority
+Jira Assignee
+First Seen
+Last Seen
 ```
+
+The historical Jira registry is intentionally separate from the current TradeOps break snapshot.
+
+Therefore:
+
+```text
+Total historical Jira incidents
+```
+
+does not necessarily equal:
+
+```text
+Current open TradeOps breaks
+```
+
+### Current Integration Note
+
+The current incident registry successfully retrieves historical Jira/TradeOps records, while richer Jira metadata synchronisation such as status, priority, assignee, and lifecycle mapping is still being refined.
 
 ---
 
-## AI Guardrails
+# GitHub Actions Automation
 
-AI must not recalculate or modify:
-
-```text
-trade_id
-exception_type
-severity
-severity_score
-```
-
-Evidence is separated into:
+Workflow:
 
 ```text
-OBSERVED:
-HYPOTHESIS:
+.github/workflows/tradeops-pipeline.yml
 ```
 
-This helps distinguish source data from model inference.
-
----
-
-# Confidence Gate
-
-AI confidence is routed through a confidence gate.
-
-Example thresholds:
+The pipeline runs:
 
 ```text
-AUTO             confidence >= 0.80
-REVIEW REQUIRED  confidence >= 0.60
-MANUAL REVIEW    confidence < 0.60
+every 30 minutes
 ```
 
-The confidence result affects operational handling but never overrides deterministic TradeOps severity.
+and can also be triggered manually.
 
----
-
-# Jira Integration
-
-Current escalation policy:
+The workflow:
 
 ```text
-CRITICAL → Jira
-HIGH     → Jira
-MEDIUM   → Dashboard only
-LOW      → Dashboard only
+Checkout repository
+→ Set up Python
+→ Install dependencies
+→ Run TradeOps pipeline
+→ Upload runtime artifacts
+→ Persist DuckDB and lifecycle state
+→ Push refreshed state to main
 ```
 
-This reduces Jira noise while retaining all exceptions in TradeOps.
+Runtime artifacts are retained temporarily for debugging.
 
----
-
-## Jira Deduplication
-
-Before creating a Jira ticket, n8n checks the canonical incident key:
+Persistent operational state includes:
 
 ```text
-dedup_key = trade_id:exception_type
+data/tradeops.duckdb
+data/state/break_lifecycle.csv
+data/state/dispatch_state.csv
 ```
 
-Checks include:
-
-- incident registry
-- existing open Jira incidents
-- duplicates within the workflow run
-
-Possible outcomes:
-
-```text
-CREATE
-COMMENT
-LOG_ONLY
-LOOKUP_FAILED
-IN_RUN_DUPLICATE
-```
-
-Existing incidents can therefore be updated rather than duplicated.
-
----
-
-# Jira Incident Content
-
-A Jira incident can contain:
-
-- Trade ID
-- Symbol
-- Break Type
-- Severity
-- Severity Score
-- Execution Quantity
-- Clearing Quantity
-- Execution Price
-- Clearing Price
-- Clearing Status
-- Clearing Latency
-- Affected Notional
-- SLA Status
-- AI Root Cause
-- AI Confidence
-- Evidence
-- Recommended Action
-
----
-
-# Incident Registry
-
-n8n maintains a persistent incident registry.
-
-Typical fields:
-
-```text
-dedup_key
-break_id
-trade_id
-symbol
-break_type
-jira_issue_key
-status
-severity
-first_seen_at
-last_seen_at
-last_workflow_run_id
-```
-
-The registry supports:
-
-- deduplication
-- lifecycle tracking
-- Jira linkage
-- repeated-break handling
-- dashboard incident retrieval
-
----
-
-# TradeOps Incident API
-
-A second n8n workflow exposes incident-registry data to Streamlit.
-
-Flow:
-
-```text
-GET Webhook
-    ↓
-Load TradeOps Incidents
-    ↓
-Format Incident API Response
-    ↓
-Respond to Webhook
-```
-
-Example response:
-
-```json
-{
-  "dedup_key": "TRD-001842:PRICE_MISMATCH",
-  "break_id": "BRK-000123",
-  "trade_id": "TRD-001842",
-  "symbol": "NVDA",
-  "break_type": "PRICE_MISMATCH",
-  "severity": "HIGH",
-  "jira_issue_key": "TROP-31",
-  "jira_issue_url": "https://your-domain.atlassian.net/browse/TROP-31",
-  "first_seen_at": "2026-10-21T00:00:00Z",
-  "last_seen_at": "2026-10-21T00:15:00Z"
-}
-```
-
----
-
-# Audit Logging
-
-The automation architecture supports operational audit logging.
-
-Example audit fields:
-
-```text
-workflow_run_id
-processed_at
-break_id
-dedup_key
-trade_id
-break_type
-severity
-severity_score
-sla_status
-affected_notional
-likely_root_cause
-ai_confidence
-automated_decision
-jira_action
-jira_issue_key
-jira_ticket_created
-duplicate_prevented
-action_taken
-processing_status
-retry_required
-retry_stage
-workflow_error
-error_detail
-```
-
-This enables later analysis of:
-
-- workflow reliability
-- AI confidence
-- Jira creation rates
-- duplicate prevention
-- failed operations
-- retries
-- incident outcomes
-
----
-
-# Pipeline Orchestration
-
-File:
-
-```text
-run_pipeline.py
-```
-
-The orchestration script runs:
-
-```text
-Ingestion
-→ Cleaning
-→ Execution Enrichment
-→ Clearing Generation
-→ Reconciliation
-→ Severity Scoring
-→ SLA Processing
-→ DuckDB Load
-→ n8n Dispatch
-```
-
-Run:
-
-```bash
-python run_pipeline.py
-```
-
-The pipeline stops immediately if a stage fails.
-
----
-
-# Pipeline Logging
-
-Scheduled executions can write logs to:
-
-```text
-logs/pipeline.log
-```
-
-Example:
-
-```text
-2026-10-21 11:00:00 | TRADEOPS PIPELINE START
-2026-10-21 11:00:01 | START | Ingestion
-2026-10-21 11:00:04 | SUCCESS | Ingestion
-2026-10-21 11:00:05 | START | Cleaning
-2026-10-21 11:00:07 | SUCCESS | Cleaning
-2026-10-21 11:00:18 | SUCCESS | n8n dispatch
-2026-10-21 11:00:18 | TRADEOPS PIPELINE COMPLETE
-```
-
-Runtime logs should remain outside source control.
-
----
-
-# Cloud Architecture
-
-The project uses several cloud services:
-
-| Layer | Service |
-|---|---|
-| Dashboard | Streamlit Community Cloud |
-| Automation | n8n Cloud |
-| Incident Management | Jira Cloud |
-| Source Control | GitHub |
-| Scheduled Pipeline | GitHub Actions |
-| Market Data | Alpaca |
-
-Target architecture:
-
-```text
-GitHub Actions
-      ↓
-run_pipeline.py
-      ↓
-Alpaca Market Data
-      ↓
-Reconciliation
-      ↓
-Severity / SLA
-      ↓
-Operational Data
-      ↓
-n8n Cloud
-      ↓
-Jira Cloud
-
-Streamlit Community Cloud
-      ↓
-TradeOps Dashboard
-```
-
----
-
-# GitHub Actions
-
-TradeOps can run automatically using GitHub Actions.
-
-Example:
-
-```yaml
-name: TradeOps Pipeline
-
-on:
-  workflow_dispatch:
-
-  schedule:
-    - cron: "*/30 * * * *"
-
-jobs:
-  run-tradeops:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.13"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: Run TradeOps pipeline
-        env:
-          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
-          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
-        run: |
-          python run_pipeline.py
-```
-
-Credentials are stored using GitHub Actions Secrets.
-
----
-
-# Technology Stack
-
-## Backend
-
-- Python
-- Pandas
-- DuckDB
-- Requests
-- python-dotenv
-
-## Market Data
-
-- Alpaca Market Data API
-- IEX feed
-
-## Dashboard
-
-- Streamlit
-- Plotly
-
-## Automation
-
-- n8n Cloud
-
-## Incident Management
-
-- Jira Cloud
-
-## Deployment
-
-- Streamlit Community Cloud
-- GitHub
-- GitHub Actions
+This allows the deployed Streamlit dashboard to receive refreshed data without requiring a local Windows machine to remain online.
 
 ---
 
@@ -1262,7 +832,6 @@ tradeops-platform/
 │
 ├── dashboard/
 │   ├── app.py
-│   │
 │   ├── app_pages/
 │   │   ├── overview.py
 │   │   ├── exception_queue.py
@@ -1274,32 +843,18 @@ tradeops-platform/
 │       ├── components.py
 │       ├── data.py
 │       ├── formatting.py
+│       ├── investigation.py
 │       ├── sidebar.py
+│       ├── tables.py
+│       ├── charts.py
 │       └── theme.py
 │
 ├── data/
 │   ├── raw/
-│   │   └── market_trades_raw.csv
-│   │
 │   ├── cleaned/
-│   │   └── market_trades_cleaned.csv
-│   │
 │   ├── processed/
-│   │   ├── executions.csv
-│   │   ├── clearing.csv
-│   │   ├── reconciliation_results.csv
-│   │   ├── trade_breaks.csv
-│   │   ├── trade_breaks_scored.csv
-│   │   └── trade_breaks_sla.csv
-│   │
 │   ├── state/
-│   │   ├── break_lifecycle.csv
-│   │   └── dispatch_state.csv
-│   │
 │   └── tradeops.duckdb
-│
-├── logs/
-│   └── pipeline.log
 │
 ├── src/
 │   ├── ingestion.py
@@ -1313,127 +868,66 @@ tradeops-platform/
 │   ├── query_database.py
 │   └── send_to_n8n.py
 │
-├── .env
-├── .gitignore
-├── README.md
+├── run_pipeline.py
 ├── requirements.txt
-└── run_pipeline.py
+├── .gitignore
+└── README.md
 ```
 
 ---
 
-# Local Setup
+# Running Locally
 
-## 1. Clone Repository
+## 1. Clone the repository
 
 ```bash
 git clone https://github.com/vivianle-2209/tradeops-platform.git
 cd tradeops-platform
 ```
 
----
+## 2. Create a virtual environment
 
-## 2. Create Virtual Environment
-
-### Windows
+Windows:
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 ```
 
-### macOS / Linux
+macOS / Linux:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 ```
 
----
-
-## 3. Install Dependencies
+## 3. Install dependencies
 
 ```bash
-python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
----
+## 4. Configure environment variables
 
-## 4. Environment Variables
+Create a local `.env` file containing the required integration credentials.
 
-Create:
-
-```text
-.env
-```
-
-Example:
-
-```env
-ALPACA_API_KEY=your_key
-ALPACA_SECRET_KEY=your_secret
-N8N_WEBHOOK_URL=your_webhook
-```
-
-Never commit `.env`.
-
----
-
-# Streamlit Secrets
-
-Local Streamlit secrets:
+Example variable names:
 
 ```text
-.streamlit/secrets.toml
+ALPACA_API_KEY
+ALPACA_SECRET_KEY
+N8N_WEBHOOK_URL
 ```
 
-Example:
+Do not commit credentials to Git.
 
-```toml
-N8N_INCIDENT_API_URL = "your_incident_api_url"
-JIRA_BOARD_URL = "your_jira_board_url"
-```
-
-For Streamlit Community Cloud:
-
-```text
-Manage app
-→ Settings
-→ Secrets
-```
-
-Never commit:
-
-```text
-.streamlit/secrets.toml
-```
-
----
-
-# Run Full Pipeline
+## 5. Run the pipeline
 
 ```bash
 python run_pipeline.py
 ```
 
-Or run stages manually:
-
-```bash
-python src/ingestion.py
-python src/cleaning.py
-python src/enrich_executions.py
-python src/generate_clearing.py
-python src/reconciliation.py
-python src/severity.py
-python src/sla.py
-python src/load_database.py
-python src/send_to_n8n.py
-```
-
----
-
-# Run Dashboard
+## 6. Launch the dashboard
 
 ```bash
 python -m streamlit run dashboard/app.py
@@ -1441,308 +935,191 @@ python -m streamlit run dashboard/app.py
 
 ---
 
-# Environment Configuration
+# Design Decisions
 
-| Variable | Purpose |
-|---|---|
-| `ALPACA_API_KEY` | Alpaca authentication |
-| `ALPACA_SECRET_KEY` | Alpaca authentication |
-| `N8N_WEBHOOK_URL` | Break-dispatch endpoint |
+## Why Python?
 
-Streamlit secrets:
+Python provides a strong ecosystem for:
 
-| Secret | Purpose |
-|---|---|
-| `N8N_INCIDENT_API_URL` | n8n Incident API |
-| `JIRA_BOARD_URL` | Jira board link |
+- tabular data processing
+- APIs
+- analytics
+- database interaction
+- automation
+- dashboard development
 
 ---
 
-# Security
+## Why DuckDB?
 
-Recommended `.gitignore` entries:
+DuckDB is used because this project primarily performs analytical processing over structured tabular data.
 
-```gitignore
-.env
-.venv/
-__pycache__/
-*.pyc
+It provides:
 
-.streamlit/secrets.toml
+- fast local analytics
+- SQL querying
+- simple deployment
+- minimal infrastructure
+- direct integration with Pandas
 
-logs/
-
-*.duckdb.wal
-```
-
-Never commit:
-
-- Alpaca credentials
-- Jira credentials
-- n8n credentials
-- private API tokens
-- Streamlit secrets
-- local virtual environments
+For a production multi-user system, the storage layer could be replaced with PostgreSQL, a cloud warehouse, or another persistent shared database.
 
 ---
 
-# Key Design Decisions
+## Why Streamlit?
 
-## Deterministic Reconciliation
+Streamlit provides a lightweight way to build an operational analytics interface directly on top of Python data logic.
 
-Break detection is deterministic and reproducible.
-
-AI is not involved in deciding whether an execution and clearing record match.
+In this architecture, Streamlit is deliberately used as the **frontend**, not as the scheduler.
 
 ---
 
-## AI Is a Triage Layer
+## Why GitHub Actions?
 
-AI answers questions such as:
+The original local prototype used Windows Task Scheduler.
+
+The deployed architecture now uses GitHub Actions so the pipeline can run independently of the developer's computer.
+
+This creates a clearer separation:
 
 ```text
-What is the likely root cause?
-What should an analyst investigate?
-How confident is the model?
-```
+run_pipeline.py = what runs
 
-It does not decide whether the trade is broken.
+GitHub Actions = when and where it runs
+
+DuckDB = where analytical state is stored
+
+Streamlit = how users view the data
+
+n8n = workflow automation
+
+Jira = incident management
+```
 
 ---
 
-## `break_id` vs `dedup_key`
+## Why n8n?
 
-TradeOps deliberately separates:
+n8n is used for the workflow-orchestration layer rather than embedding all incident-management logic directly into Python.
+
+This makes the downstream process easier to visualise and separates:
 
 ```text
-break_id
+deterministic trading logic
 ```
 
 from:
 
 ```text
-dedup_key
+workflow automation and AI-assisted triage
 ```
 
-`break_id` identifies an individual exception row.
+---
 
-`dedup_key` identifies the persistent logical incident.
+# Controls & Reliability
 
-Example:
+The platform includes several operational controls:
+
+- deterministic severity classification
+- canonical deduplication keys
+- persistent incident lifecycle state
+- persistent dispatch state
+- automatic retry for failed dispatches
+- HIGH / CRITICAL escalation gating
+- SLA monitoring
+- separation of deterministic logic and AI reasoning
+- auditable reconciliation evidence
+- scheduled cloud execution
+- pipeline-stage logging
+- GitHub Actions artifacts for debugging
+
+---
+
+# Current Limitations
+
+TradeOps is an educational and portfolio project, not a production trading or clearing system.
+
+Current limitations include:
+
+- clearing data is synthetically generated
+- operational failures are deliberately injected
+- market data is sourced from the Alpaca IEX feed
+- DuckDB is used as a lightweight persistence layer
+- GitHub is temporarily used to distribute the refreshed database snapshot
+- historical Jira test incidents remain in the registry
+- richer Jira metadata synchronisation is still being refined
+- execution IDs are generated by the simulated internal pipeline rather than received from a production OMS/EMS
+- the platform does not model every stage of real clearing, settlement, custody, or regulatory reporting
+
+---
+
+# Future Improvements
+
+Potential extensions include:
 
 ```text
-dedup_key = trade_id:exception_type
-```
-
-This enables incident deduplication and lifecycle management.
-
----
-
-## Unique Broken Trades vs Exception Rows
-
-One trade can have multiple exceptions.
-
-Example:
-
-```text
-TRD-001201
-├── QUANTITY_MISMATCH
-├── ACCOUNT_MISMATCH
-└── LATE_CLEARING
-```
-
-This represents:
-
-```text
-1 broken trade
-3 exception rows
-```
-
-Therefore dashboard break-volume metrics use unique trade counts where appropriate.
-
----
-
-## Jira Escalation Threshold
-
-Only:
-
-```text
-HIGH
-CRITICAL
-```
-
-are automatically escalated into Jira.
-
-MEDIUM and LOW incidents remain visible in the dashboard without creating unnecessary operational ticket volume.
-
----
-
-# Example Incident Lifecycle
-
-```text
-1. NVDA execution is captured.
-
-2. Synthetic clearing generates a quantity mismatch.
-
-3. Reconciliation detects:
-   QUANTITY_MISMATCH
-
-4. TradeOps calculates:
-   severity = HIGH
-   severity_score = 62
-
-5. SLA engine assigns:
-   30-minute SLA
-
-6. Break appears in Streamlit.
-
-7. Dispatch layer determines it is Jira-eligible.
-
-8. n8n receives the event.
-
-9. AI triage suggests:
-   BOOKING_OR_ALLOCATION_MISMATCH
-
-10. n8n checks:
-    TRD-001842:QUANTITY_MISMATCH
-
-11. No existing incident is found.
-
-12. Jira incident is created.
-
-13. Incident registry stores:
-    Jira key
-    severity
-    first_seen_at
-    last_seen_at
-
-14. TradeOps Jira Incidents page displays the ticket.
+Real external clearing data
+PostgreSQL / cloud database persistence
+Production-grade message queues
+Event-driven processing
+Better incident lifecycle reconciliation
+Bidirectional Jira status synchronisation
+More robust observability
+Metrics and alerting
+Authentication and role-based access
+Containerisation
+Automated tests
+CI quality gates
+Historical break analytics
+Trade-level lineage
+Microstructure analytics
 ```
 
 ---
 
-# Current Status
-
-Implemented:
-
-- multi-symbol market-data ingestion
-- normalized trade data
-- execution enrichment
-- synthetic clearing generation
-- controlled break injection
-- post-trade reconciliation
-- multiple exception types
-- quantitative severity scoring
-- SLA classification
-- DuckDB storage
-- Streamlit operational dashboard
-- global symbol scope
-- symbol-level analytics
-- stacked matched-vs-broken volume visualization
-- Exception Queue
-- SLA & Risk view
-- Trade Investigation
-- n8n integration
-- AI-assisted root-cause triage
-- confidence gating
-- Jira ticket creation
-- Jira deduplication
-- persistent n8n incident registry
-- TradeOps Incident API
-- audit workflow
-- pipeline orchestration
-- scheduled-cloud architecture
-
----
-
-# Roadmap
-
-Planned improvements:
-
-- persistent cloud-hosted operational database
-- cloud persistence of lifecycle state
-- dispatch retry handling
-- real Jira workflow-status synchronization
-- Jira assignee synchronization
-- Jira priority synchronization
-- automatic incident resolution
-- historical SLA trends
-- historical break-rate trends
-- pipeline-health dashboard
-- pipeline-run observability
-- configurable market universe
-- configurable reconciliation tolerances
-- richer clearing simulation
-- automated tests
-- CI validation
-- Docker support
-- structured application logging
-
----
-
-# Portfolio Relevance
+# What This Project Demonstrates
 
 TradeOps demonstrates practical experience across:
 
-- Python data engineering
-- post-trade reconciliation
-- trading operations
-- operational exception management
-- quantitative severity scoring
+**Data Engineering**
+- API ingestion
+- data cleaning
+- pipeline orchestration
+- schema design
+- analytical storage
+
+**Trading Operations**
+- execution / clearing reconciliation
+- break detection
+- exception classification
 - SLA monitoring
-- workflow automation
-- AI-assisted operations
-- API integration
-- incident management
-- deduplication
-- analytical databases
-- dashboard engineering
+- operational incident management
+
+**Software Engineering**
+- modular Python architecture
+- state management
+- logging
+- error handling
 - cloud scheduling
-- operational controls
-- auditability
+- deployment
 
-The project is particularly relevant to roles in:
+**Analytics**
+- operational KPIs
+- risk exposure
+- break ageing
+- symbol-level analysis
+- investigation workflows
 
-- quantitative trading operations
-- trading technology
-- middle office
-- financial data analytics
-- operations engineering
-- fintech
-- workflow automation
-- post-trade analytics
+**Automation**
+- n8n orchestration
+- incident deduplication
+- Jira escalation
+- AI-assisted triage
 
 ---
 
 # Disclaimer
 
-TradeOps is an educational and portfolio project.
+This project is for educational, portfolio, and engineering demonstration purposes only.
 
-The project combines historical market data with synthetic execution, clearing, reconciliation, exception, and incident records for demonstration purposes.
-
-It is not:
-
-- a brokerage system
-- a live trading platform
-- an order-management system
-- a clearinghouse
-- a settlement platform
-- a trading strategy
-- financial advice
-
-Synthetic records should not be interpreted as real brokerage, exchange, clearing, or settlement events.
-
----
-
-# Author
-
-**Vivian Le**
-
-GitHub:  
-https://github.com/vivianle-2209
-
-Repository:  
-https://github.com/vivianle-2209/tradeops-platform
-
-Live Dashboard:  
-https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/
+It does not execute trades, provide investment advice, or represent a production brokerage, exchange, clearinghouse, or settlement platform.
