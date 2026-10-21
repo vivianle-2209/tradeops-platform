@@ -21,3 +21,7 @@ data/state/
 
 # DuckDB temporary files
 *.duckdb.wal
+
+# AI packages
+.agents
+.claude
