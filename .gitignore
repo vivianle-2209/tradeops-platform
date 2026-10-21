@@ -3,11 +3,8 @@
 __pycache__/
 *.pyc
 
-.agents\skills
-.claude\skills
-
 .streamlit/secrets.toml
 
-*.duckdb.wal
-
 logs/
+
+*.duckdb.wal

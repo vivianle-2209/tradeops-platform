@@ -5,12 +5,33 @@ import numpy as np
 import pandas as pd
 
 
-INPUT_PATH = "data/cleaned/msft_trades_clean.csv"
-OUTPUT_PATH = "data/processed/executions.csv"
+INPUT_PATH = (
+    "data/cleaned/"
+    "market_trades_cleaned.csv"
+)
 
-random.seed(42)
-np.random.seed(42)
+OUTPUT_PATH = (
+    "data/processed/"
+    "executions.csv"
+)
 
+
+# --------------------------------------------------
+# Reproducibility
+# --------------------------------------------------
+
+random.seed(
+    42
+)
+
+np.random.seed(
+    42
+)
+
+
+# --------------------------------------------------
+# Synthetic internal trading attributes
+# --------------------------------------------------
 
 ACCOUNTS = [
     "ACC-1001",
@@ -18,6 +39,7 @@ ACCOUNTS = [
     "ACC-3001",
     "ACC-4001",
 ]
+
 
 TRADERS = [
     "TR-0101",
@@ -27,42 +49,106 @@ TRADERS = [
 ]
 
 
-def enrich_executions(df):
+def enrich_executions(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
     """
-    Add simulated internal trading attributes
+    Add simulated internal TradeOps attributes
     to cleaned market trade records.
     """
 
     df = df.copy()
 
+
+    # --------------------------------------------------
     # Simulated BUY / SELL direction
-    df["side"] = np.random.choice(
-        ["BUY", "SELL"],
-        size=len(df),
+    # --------------------------------------------------
+
+    df["side"] = (
+        np.random.choice(
+            [
+                "BUY",
+                "SELL",
+            ],
+            size=len(df),
+        )
     )
 
-    # Simulated account ownership
-    df["account"] = np.random.choice(
-        ACCOUNTS,
-        size=len(df),
+
+    # --------------------------------------------------
+    # Synthetic account ownership
+    # --------------------------------------------------
+
+    df["account"] = (
+        np.random.choice(
+            ACCOUNTS,
+            size=len(df),
+        )
     )
 
-    # Simulated trader ownership
-    df["trader_id"] = np.random.choice(
-        TRADERS,
-        size=len(df),
+
+    # --------------------------------------------------
+    # Synthetic trader ownership
+    # --------------------------------------------------
+
+    df["trader_id"] = (
+        np.random.choice(
+            TRADERS,
+            size=len(df),
+        )
     )
 
-    # Generate internal order IDs
+
+    # --------------------------------------------------
+    # Internal order IDs
+    # --------------------------------------------------
+
     df["order_id"] = [
         f"ORD-{i:06d}"
-        for i in range(1, len(df) + 1)
+        for i in range(
+            1,
+            len(df) + 1,
+        )
     ]
 
-    # Mark record source
-    df["record_source"] = "EXECUTION"
 
-    # Reorder into TradeOps execution schema
+    # --------------------------------------------------
+    # Record source
+    # --------------------------------------------------
+
+    df[
+        "record_source"
+    ] = "EXECUTION"
+
+
+    # --------------------------------------------------
+    # Ensure execution notional exists
+    # --------------------------------------------------
+
+    if (
+        "execution_notional"
+        not in df.columns
+    ):
+
+        df[
+            "execution_notional"
+        ] = (
+            pd.to_numeric(
+                df["quantity"],
+                errors="coerce",
+            )
+            *
+            pd.to_numeric(
+                df["price"],
+                errors="coerce",
+            )
+        )
+
+
+    # --------------------------------------------------
+    # Final execution schema
+    # --------------------------------------------------
+
     df = df[
         [
             "record_source",
@@ -73,6 +159,7 @@ def enrich_executions(df):
             "side",
             "quantity",
             "price",
+            "execution_notional",
             "currency",
             "account",
             "venue",
@@ -83,40 +170,72 @@ def enrich_executions(df):
         ]
     ]
 
+
     return df
 
 
 if __name__ == "__main__":
 
-    df_clean = pd.read_csv(INPUT_PATH)
+    df_clean = pd.read_csv(
+        INPUT_PATH
+    )
 
-    df_executions = enrich_executions(df_clean)
+
+    df_executions = (
+        enrich_executions(
+            df_clean
+        )
+    )
+
 
     os.makedirs(
         "data/processed",
         exist_ok=True,
     )
 
+
     df_executions.to_csv(
         OUTPUT_PATH,
         index=False,
     )
 
-    print()
-    print("TradeOps execution enrichment complete")
-    print("-" * 45)
 
     print()
-    print("Sample execution records:")
-    print(df_executions.head())
+    print(
+        "TradeOps execution enrichment complete"
+    )
+
+    print(
+        "-" * 45
+    )
+
+
+    print(
+        f"Execution rows: "
+        f"{len(df_executions)}"
+    )
+
 
     print()
-    print(f"Execution rows: {len(df_executions)}")
+    print(
+        "Executions by symbol:"
+    )
+
+    print(
+        df_executions[
+            "symbol"
+        ]
+        .value_counts()
+        .sort_index()
+        .to_string()
+    )
+
 
     print()
-    print("Execution columns:")
-    print(df_executions.columns.tolist())
+    print(
+        "Saved to:"
+    )
 
-    print()
-    print("Saved to:")
-    print(OUTPUT_PATH)
+    print(
+        OUTPUT_PATH
+    )

@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 
 import pandas as pd
 import requests
@@ -6,15 +7,45 @@ from dotenv import load_dotenv
 
 
 # --------------------------------------------------
-# Load environment variables
+# Environment
 # --------------------------------------------------
 
 load_dotenv()
 
-API_KEY = os.getenv("ALPACA_API_KEY")
-SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+API_KEY = os.getenv(
+    "ALPACA_API_KEY"
+)
 
-BASE_URL = "https://data.alpaca.markets/v2/stocks"
+SECRET_KEY = os.getenv(
+    "ALPACA_SECRET_KEY"
+)
+
+
+BASE_URL = (
+    "https://data.alpaca.markets/v2/stocks"
+)
+
+
+# --------------------------------------------------
+# TradeOps market basket
+# --------------------------------------------------
+
+WINDOWS_MINUTES = 15
+
+SYMBOLS = [
+    "MSFT",
+    "AAPL",
+    "NVDA",
+    "AMZN",
+    "META",
+    "GOOGL",
+    "TSLA",
+]
+
+
+RAW_OUTPUT_PATH = (
+    "data/raw/market_trades_raw.csv"
+)
 
 
 # --------------------------------------------------
@@ -22,6 +53,7 @@ BASE_URL = "https://data.alpaca.markets/v2/stocks"
 # --------------------------------------------------
 
 if not API_KEY or not SECRET_KEY:
+
     raise ValueError(
         "Alpaca API credentials were not found. "
         "Check your .env file."
@@ -29,44 +61,41 @@ if not API_KEY or not SECRET_KEY:
 
 
 # --------------------------------------------------
-# Fetch historical trades
+# Fetch trades for one symbol
 # --------------------------------------------------
 
 def fetch_trades(
-    symbol,
-    start,
-    end,
-    limit=1000,
-):
+    symbol: str,
+    start: str,
+    end: str,
+    limit: int = 1000,
+) -> pd.DataFrame:
     """
-    Fetch historical stock trades from Alpaca.
-
-    Parameters
-    ----------
-    symbol : str
-        Stock ticker, e.g. "MSFT".
-
-    start : str
-        Start timestamp in ISO 8601 format.
-
-    end : str
-        End timestamp in ISO 8601 format.
-
-    limit : int
-        Maximum number of trades to request.
-
-    Returns
-    -------
-    pandas.DataFrame
-        Raw trade records returned by Alpaca.
+    Fetch historical IEX trades for one symbol
+    from Alpaca.
     """
 
-    url = f"{BASE_URL}/{symbol}/trades"
+    symbol = (
+        str(symbol)
+        .strip()
+        .upper()
+    )
+
+    url = (
+        f"{BASE_URL}/"
+        f"{symbol}/trades"
+    )
+
 
     headers = {
-        "APCA-API-KEY-ID": API_KEY,
-        "APCA-API-SECRET-KEY": SECRET_KEY,
+        "APCA-API-KEY-ID": (
+            API_KEY
+        ),
+        "APCA-API-SECRET-KEY": (
+            SECRET_KEY
+        ),
     }
+
 
     params = {
         "start": start,
@@ -75,6 +104,7 @@ def fetch_trades(
         "feed": "iex",
         "sort": "asc",
     }
+
 
     response = requests.get(
         url,
@@ -85,31 +115,110 @@ def fetch_trades(
 
     response.raise_for_status()
 
-    data = response.json()
+    payload = response.json()
 
-    trades = data.get("trades", [])
+    trades = payload.get(
+        "trades",
+        [],
+    )
 
-    df = pd.DataFrame(trades)
 
-    # Alpaca's single-symbol endpoint does not
-    # repeat the ticker inside each trade record,
-    # so add it manually.
+    df = pd.DataFrame(
+        trades
+    )
+
+
     if not df.empty:
-        df["symbol"] = symbol.upper()
+
+        df["symbol"] = (
+            symbol
+        )
+
 
     return df
 
 
 # --------------------------------------------------
-# Save raw data
+# Fetch complete symbol basket
+# --------------------------------------------------
+
+def fetch_market_basket(
+    symbols: list[str],
+    start: str,
+    end: str,
+    limit_per_symbol: int = 1000,
+) -> pd.DataFrame:
+    """
+    Fetch trades for all configured symbols and
+    combine them into one raw dataset.
+    """
+
+    frames = []
+
+
+    for symbol in symbols:
+
+        print(
+            f"Fetching {symbol}..."
+        )
+
+
+        try:
+
+            symbol_df = (
+                fetch_trades(
+                    symbol=symbol,
+                    start=start,
+                    end=end,
+                    limit=limit_per_symbol,
+                )
+            )
+
+
+            print(
+                f"  {symbol}: "
+                f"{len(symbol_df)} rows"
+            )
+
+
+            if not symbol_df.empty:
+
+                frames.append(
+                    symbol_df
+                )
+
+
+        except requests.RequestException as exc:
+
+            print(
+                f"  {symbol}: FAILED | "
+                f"{exc}"
+            )
+
+
+    if not frames:
+
+        return pd.DataFrame()
+
+
+    combined = pd.concat(
+        frames,
+        ignore_index=True,
+    )
+
+
+    return combined
+
+
+# --------------------------------------------------
+# Save combined raw dataset
 # --------------------------------------------------
 
 def save_raw_trades(
-    df,
-    symbol,
-):
+    df: pd.DataFrame,
+) -> str:
     """
-    Save the raw API response to data/raw.
+    Save combined multi-symbol trade data.
     """
 
     os.makedirs(
@@ -117,54 +226,149 @@ def save_raw_trades(
         exist_ok=True,
     )
 
-    output_path = (
-        f"data/raw/"
-        f"{symbol.lower()}_trades_raw.csv"
-    )
 
     df.to_csv(
-        output_path,
+        RAW_OUTPUT_PATH,
         index=False,
     )
 
-    return output_path
+
+    return (
+        RAW_OUTPUT_PATH
+    )
 
 
 # --------------------------------------------------
-# Run ingestion
+# Determine ingestion window
+# --------------------------------------------------
+
+def build_time_window(
+    minutes: int = WINDOWS_MINUTES,
+) -> tuple[str, str]:
+    """
+    Build a recent UTC time window.
+
+    Alpaca may not return trades outside market
+    activity periods, so this function only defines
+    the requested interval.
+    """
+
+    end = pd.Timestamp.now(
+        tz="UTC"
+    )
+
+    start = (
+        end
+        - timedelta(
+            minutes=minutes
+        )
+    )
+
+
+    return (
+        start.isoformat(),
+        end.isoformat(),
+    )
+
+
+# --------------------------------------------------
+# Run
 # --------------------------------------------------
 
 if __name__ == "__main__":
 
-    symbol = "MSFT"
-
-    df = fetch_trades(
-        symbol=symbol,
-        start="2026-10-19T14:00:00Z",
-        end="2026-10-19T14:05:00Z",
-        limit=1000,
+    start_time, end_time = (
+        build_time_window(
+            minutes=WINDOWS_MINUTES
+        )
     )
 
-    output_path = save_raw_trades(
-        df=df,
-        symbol=symbol,
+
+    print()
+    print(
+        "TradeOps market-data ingestion"
     )
 
-    print()
-    print("TradeOps ingestion complete")
-    print("-" * 40)
+    print(
+        "-" * 45
+    )
+
+
+    print(
+        f"Start: {start_time}"
+    )
+
+    print(
+        f"End:   {end_time}"
+    )
+
+    print(
+        f"Symbols: "
+        f"{', '.join(SYMBOLS)}"
+    )
+
+
+    df = (
+        fetch_market_basket(
+            symbols=SYMBOLS,
+            start=start_time,
+            end=end_time,
+            limit_per_symbol=1000,
+        )
+    )
+
+
+    if df.empty:
+
+        raise RuntimeError(
+            "No market trade data was returned "
+            "for the configured symbol basket."
+        )
+
+
+    output_path = (
+        save_raw_trades(
+            df
+        )
+    )
+
 
     print()
-    print("Sample rows:")
-    print(df.head())
+    print(
+        "TradeOps ingestion complete"
+    )
+
+    print(
+        "-" * 45
+    )
+
+
+    print(
+        f"Rows retrieved: "
+        f"{len(df)}"
+    )
+
 
     print()
-    print(f"Rows retrieved: {len(df)}")
+    print(
+        "Rows by symbol:"
+    )
+
+    print(
+        df[
+            "symbol"
+        ]
+        .value_counts()
+        .sort_index()
+        .to_string()
+    )
+
 
     print()
-    print("Columns:")
-    print(df.columns.tolist())
+    print(
+        "Raw file saved to:"
+    )
 
-    print()
-    print(f"Raw file saved to:")
-    print(output_path)
+    print(
+        output_path
+    )

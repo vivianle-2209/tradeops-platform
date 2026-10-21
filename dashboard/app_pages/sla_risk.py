@@ -1,95 +1,819 @@
-"""SLA & risk: ageing, severity/SLA matrix, escalation queues, concentration."""
+"""
+SLA & Risk
 
+Dashboard view for:
+- SLA status
+- affected notional
+- severity/SLA relationship
+- break ageing
+- escalation queues
+- exposure concentration
+
+All data comes from the dashboard context created by dashboard/app.py.
+"""
+
+import pandas as pd
 import streamlit as st
 
 from tradeops_ui.charts import (
-    PLOTLY_CONFIG, chart_card, fig_age_vs_severity, fig_exposure_by_group,
-    fig_notional_by_sla, fig_severity_sla_matrix, fig_sla_distribution,
+    PLOTLY_CONFIG,
+    chart_card,
+    fig_age_vs_severity,
+    fig_exposure_by_group,
+    fig_notional_by_sla,
+    fig_severity_sla_matrix,
+    fig_sla_distribution,
 )
-from tradeops_ui.components import empty_state, page_title
-from tradeops_ui.data import get_context
-from tradeops_ui.formatting import fmt_money
-from tradeops_ui.tables import breaks_table
-from tradeops_ui.theme import BLACK, PINK
+
+from tradeops_ui.components import (
+    empty_state,
+    page_title,
+)
+
+from tradeops_ui.data import (
+    get_context,
+)
+
+from tradeops_ui.formatting import (
+    fmt_money,
+)
+
+from tradeops_ui.tables import (
+    breaks_table,
+)
+
+from tradeops_ui.theme import (
+    BLACK,
+    PINK,
+)
+
+
+# ==================================================
+# Configuration
+# ==================================================
 
 SLA_TABLE_COLUMNS = [
-    "break_id", "trade_id", "exception_type", "severity", "severity_score", "sla_status", "age_minutes",
-    "sla_minutes", "sla_remaining_minutes", "affected_notional", "detected_at",
+    "break_id",
+    "trade_id",
+    "symbol_exec",
+    "exception_type",
+    "severity",
+    "severity_score",
+    "sla_status",
+    "age_minutes",
+    "sla_minutes",
+    "sla_remaining_minutes",
+    "affected_notional",
+    "detected_at",
 ]
+
+
 CONCENTRATION_DIMENSIONS = {
-    "Exception type": "exception_type",
-    "Venue": "venue",
-    "Account": "account_exec",
-    "Symbol": "symbol_exec",
+    "Exception type":
+        "exception_type",
+
+    "Symbol":
+        "symbol_exec",
+
+    "Venue":
+        "venue",
+
+    "Account":
+        "account_exec",
 }
 
+
+# ==================================================
+# Context
+# ==================================================
+
 ctx = get_context()
-filtered = ctx.filtered
 
-page_title("SLA & risk", "SLA ageing, escalation queues and exposure concentration for the current filter scope.")
+filtered = (
+    ctx.filtered.copy()
+)
 
-# ---- SLA charts --------------------------------------------------------------
 
-left, right = st.columns(2)
+# ==================================================
+# Header
+# ==================================================
+
+page_title(
+    "SLA & Risk",
+    (
+        "SLA ageing, escalation queues and "
+        "exposure concentration for the current "
+        "market and operational filter scope."
+    ),
+)
+
+
+# ==================================================
+# Empty scope protection
+# ==================================================
+
+if filtered.empty:
+
+    empty_state(
+        (
+            "No trade breaks match the current "
+            "Market Scope and operational filters."
+        )
+    )
+
+    st.stop()
+
+
+# ==================================================
+# SLA charts
+# ==================================================
+
+left, right = st.columns(
+    2,
+    vertical_alignment="top",
+)
+
+
 with left:
-    chart_card("SLA status distribution", fig_sla_distribution(filtered), key="sla_dist")
-with right:
-    chart_card("Affected notional by SLA status", fig_notional_by_sla(filtered), key="sla_notional")
 
-left, right = st.columns(2)
+    chart_card(
+        "SLA status distribution",
+        fig_sla_distribution(
+            filtered
+        ),
+        key="sla_dist",
+    )
+
+
+with right:
+
+    chart_card(
+        "Affected notional by SLA status",
+        fig_notional_by_sla(
+            filtered
+        ),
+        key="sla_notional",
+    )
+
+
+left, right = st.columns(
+    2,
+    vertical_alignment="top",
+)
+
+
 with left:
-    chart_card("Severity × SLA matrix", fig_severity_sla_matrix(filtered), key="sla_matrix",
-               caption="Break count per cell")
+
+    chart_card(
+        "Severity × SLA matrix",
+        fig_severity_sla_matrix(
+            filtered
+        ),
+        key="sla_matrix",
+        caption=(
+            "Break count per cell"
+        ),
+    )
+
+
 with right:
-    chart_card("Break age vs severity", fig_age_vs_severity(filtered), key="sla_scatter",
-               caption="Bubble size = affected notional")
 
-# ---- Escalation queues -------------------------------------------------------
+    chart_card(
+        "Break age vs severity",
+        fig_age_vs_severity(
+            filtered
+        ),
+        key="sla_scatter",
+        caption=(
+            "Bubble size = affected notional"
+        ),
+    )
 
-with st.container(border=True):
-    breached = filtered[filtered["sla_status"].eq("BREACHED")].sort_values(
-        ["severity_score", "age_minutes"], ascending=[False, False])
-    st.markdown(f"**SLA breach queue** · {len(breached):,}")
-    st.caption("Escalation candidates, highest severity and oldest first")
+
+# ==================================================
+# Risk by symbol
+# ==================================================
+
+with st.container(
+    border=True
+):
+
+    st.markdown(
+        "**Risk by symbol**"
+    )
+
+    st.caption(
+        (
+            "Operational risk concentration "
+            "within the current scope"
+        )
+    )
+
+
+    if (
+        "symbol_exec"
+        not in filtered.columns
+    ):
+
+        empty_state(
+            "Symbol data is unavailable."
+        )
+
+    else:
+
+        working = (
+            filtered.copy()
+        )
+
+
+        working[
+            "affected_notional"
+        ] = pd.to_numeric(
+            working[
+                "affected_notional"
+            ],
+            errors="coerce",
+        ).fillna(0)
+
+
+        working[
+            "age_minutes"
+        ] = pd.to_numeric(
+            working[
+                "age_minutes"
+            ],
+            errors="coerce",
+        )
+
+
+        symbol_summary = (
+            working
+            .groupby(
+                "symbol_exec",
+                dropna=False,
+            )
+            .agg(
+                breaks=(
+                    "break_id",
+                    "count",
+                ),
+
+                critical=(
+                    "severity",
+                    lambda values: (
+                        values
+                        .astype(str)
+                        .eq(
+                            "CRITICAL"
+                        )
+                        .sum()
+                    ),
+                ),
+
+                high=(
+                    "severity",
+                    lambda values: (
+                        values
+                        .astype(str)
+                        .eq(
+                            "HIGH"
+                        )
+                        .sum()
+                    ),
+                ),
+
+                breached=(
+                    "sla_status",
+                    lambda values: (
+                        values
+                        .astype(str)
+                        .eq(
+                            "BREACHED"
+                        )
+                        .sum()
+                    ),
+                ),
+
+                at_risk=(
+                    "sla_status",
+                    lambda values: (
+                        values
+                        .astype(str)
+                        .eq(
+                            "AT_RISK"
+                        )
+                        .sum()
+                    ),
+                ),
+
+                avg_age=(
+                    "age_minutes",
+                    "mean",
+                ),
+
+                affected_notional=(
+                    "affected_notional",
+                    "sum",
+                ),
+            )
+            .reset_index()
+        )
+
+
+        symbol_summary[
+            "symbol_exec"
+        ] = (
+            symbol_summary[
+                "symbol_exec"
+            ]
+            .fillna(
+                "UNKNOWN"
+            )
+            .astype(str)
+        )
+
+
+        symbol_summary = (
+            symbol_summary
+            .sort_values(
+                [
+                    "breached",
+                    "critical",
+                    "affected_notional",
+                ],
+                ascending=[
+                    False,
+                    False,
+                    False,
+                ],
+            )
+        )
+
+
+        display_summary = (
+            symbol_summary.rename(
+                columns={
+                    "symbol_exec":
+                        "Symbol",
+
+                    "breaks":
+                        "Breaks",
+
+                    "critical":
+                        "Critical",
+
+                    "high":
+                        "High",
+
+                    "breached":
+                        "Breached",
+
+                    "at_risk":
+                        "At Risk",
+
+                    "avg_age":
+                        "Avg Age (min)",
+
+                    "affected_notional":
+                        "Affected Notional",
+                }
+            )
+        )
+
+
+        st.dataframe(
+            display_summary,
+            hide_index=True,
+            width="stretch",
+            column_config={
+
+                "Symbol":
+                    st.column_config.TextColumn(
+                        "Symbol",
+                        width="small",
+                    ),
+
+                "Breaks":
+                    st.column_config.NumberColumn(
+                        "Breaks",
+                        format="%d",
+                    ),
+
+                "Critical":
+                    st.column_config.NumberColumn(
+                        "Critical",
+                        format="%d",
+                    ),
+
+                "High":
+                    st.column_config.NumberColumn(
+                        "High",
+                        format="%d",
+                    ),
+
+                "Breached":
+                    st.column_config.NumberColumn(
+                        "Breached",
+                        format="%d",
+                    ),
+
+                "At Risk":
+                    st.column_config.NumberColumn(
+                        "At Risk",
+                        format="%d",
+                    ),
+
+                "Avg Age (min)":
+                    st.column_config.NumberColumn(
+                        "Avg Age (min)",
+                        format="%.1f",
+                    ),
+
+                "Affected Notional":
+                    st.column_config.NumberColumn(
+                        "Affected Notional",
+                        format="$%.2f",
+                    ),
+            },
+        )
+
+
+# ==================================================
+# SLA breach queue
+# ==================================================
+
+with st.container(
+    border=True
+):
+
+    breached = (
+        filtered[
+            filtered[
+                "sla_status"
+            ]
+            .astype(str)
+            .eq(
+                "BREACHED"
+            )
+        ]
+        .copy()
+    )
+
+
+    if not breached.empty:
+
+        breached = (
+            breached
+            .sort_values(
+                [
+                    "severity_score",
+                    "age_minutes",
+                ],
+                ascending=[
+                    False,
+                    False,
+                ],
+                na_position="last",
+            )
+        )
+
+
+    st.markdown(
+        (
+            f"**SLA breach queue** "
+            f"· {len(breached):,}"
+        )
+    )
+
+    st.caption(
+        (
+            "Escalation candidates, highest "
+            "severity and oldest first"
+        )
+    )
+
+
     if breached.empty:
-        empty_state("No SLA breaches in the current scope.")
-    else:
-        breaks_table(breached, SLA_TABLE_COLUMNS, alt="SLA breach queue", key="sla_breach_table")
 
-with st.container(border=True):
-    severe = filtered[filtered["severity"].isin(["CRITICAL", "HIGH"])].sort_values("priority_rank")
-    st.markdown(f"**Critical and high severity incidents** · {len(severe):,}")
+        empty_state(
+            (
+                "No SLA breaches in "
+                "the current scope."
+            )
+        )
+
+    else:
+
+        breaks_table(
+            breached,
+            SLA_TABLE_COLUMNS,
+            alt=(
+                "SLA breach queue"
+            ),
+            key=(
+                "sla_breach_table"
+            ),
+        )
+
+
+# ==================================================
+# Critical / High queue
+# ==================================================
+
+with st.container(
+    border=True
+):
+
+    severe = (
+        filtered[
+            filtered[
+                "severity"
+            ]
+            .astype(str)
+            .isin(
+                [
+                    "CRITICAL",
+                    "HIGH",
+                ]
+            )
+        ]
+        .copy()
+    )
+
+
+    if not severe.empty:
+
+        if (
+            "priority_rank"
+            in severe.columns
+        ):
+
+            severe = (
+                severe
+                .sort_values(
+                    "priority_rank",
+                    na_position="last",
+                )
+            )
+
+
+    st.markdown(
+        (
+            "**Critical and high severity incidents** "
+            f"· {len(severe):,}"
+        )
+    )
+
+
+    st.caption(
+        (
+            "Priority incidents requiring "
+            "operational attention"
+        )
+    )
+
+
     if severe.empty:
-        empty_state("No critical or high severity breaks in the current scope.")
-    else:
-        breaks_table(severe, SLA_TABLE_COLUMNS, alt="Critical and high severity incidents", key="severe_table")
 
-# ---- Exposure concentration --------------------------------------------------
-
-with st.container(border=True):
-    dims = {label: col for label, col in CONCENTRATION_DIMENSIONS.items() if col in filtered.columns}
-    with st.container(horizontal=True, vertical_alignment="center"):
-        st.markdown("**Exposure concentration**")
-        st.space("stretch")
-        dim_label = st.segmented_control("Group by", list(dims), default="Exception type", required=True,
-                                         key="conc_dim", label_visibility="collapsed") or "Exception type"
-        measure_label = st.segmented_control(
-            "Measure", ["Affected", "Gross"], default="Affected", required=True, key="conc_measure",
-            label_visibility="collapsed", help="Affected = mismatched notional; Gross = full execution notional",
+        empty_state(
+            (
+                "No critical or high severity "
+                "breaks in the current scope."
+            )
         )
 
-    gross = measure_label == "Gross"
-    column = dims[dim_label]
-    measure = "execution_notional" if gross else "affected_notional"
-    total = filtered[measure].fillna(0).sum()
-    if total <= 0:
-        empty_state("No exposure for this measure in the current scope.")
     else:
-        grouped = filtered.groupby(filtered[column].fillna("UNKNOWN"))[measure].sum().sort_values(ascending=False)
-        top3 = grouped.head(3).sum() / total
-        st.caption(f"Top 3 of {len(grouped):,} {dim_label.lower()} groups hold {top3:.0%} of {fmt_money(total)}")
-        st.plotly_chart(
-            fig_exposure_by_group(filtered, column, measure, color=BLACK if gross else PINK, top=12),
-            theme=None, config=PLOTLY_CONFIG, width="stretch", key="sla_concentration",
-            alt=f"Exposure concentration by {dim_label}",
+
+        breaks_table(
+            severe,
+            SLA_TABLE_COLUMNS,
+            alt=(
+                "Critical and high severity incidents"
+            ),
+            key=(
+                "severe_table"
+            ),
         )
+
+
+# ==================================================
+# Exposure concentration
+# ==================================================
+
+with st.container(
+    border=True
+):
+
+    dims = {
+        label: column
+        for label, column
+        in CONCENTRATION_DIMENSIONS.items()
+        if column
+        in filtered.columns
+    }
+
+
+    with st.container(
+        horizontal=True,
+        vertical_alignment="center",
+    ):
+
+        st.markdown(
+            "**Exposure concentration**"
+        )
+
+        st.space(
+            "stretch"
+        )
+
+
+        if not dims:
+
+            dim_label = None
+
+        else:
+
+            default_dimension = (
+                "Exception type"
+                if "Exception type"
+                in dims
+                else next(
+                    iter(
+                        dims
+                    )
+                )
+            )
+
+
+            dim_label = (
+                st.segmented_control(
+                    "Group by",
+                    list(
+                        dims
+                    ),
+                    default=(
+                        default_dimension
+                    ),
+                    required=True,
+                    key="conc_dim",
+                    label_visibility=(
+                        "collapsed"
+                    ),
+                )
+            )
+
+
+        measure_label = (
+            st.segmented_control(
+                "Measure",
+                [
+                    "Affected",
+                    "Gross",
+                ],
+                default="Affected",
+                required=True,
+                key="conc_measure",
+                label_visibility=(
+                    "collapsed"
+                ),
+                help=(
+                    "Affected = mismatched notional; "
+                    "Gross = full execution notional"
+                ),
+            )
+        )
+
+
+    if not dims:
+
+        empty_state(
+            (
+                "No concentration dimensions "
+                "are available."
+            )
+        )
+
+    else:
+
+        gross = (
+            measure_label
+            == "Gross"
+        )
+
+
+        column = dims[
+            dim_label
+        ]
+
+
+        measure = (
+            "execution_notional"
+            if gross
+            else "affected_notional"
+        )
+
+
+        if measure not in filtered.columns:
+
+            empty_state(
+                (
+                    f"{measure} is unavailable "
+                    "for the current dataset."
+                )
+            )
+
+        else:
+
+            exposure_values = (
+                pd.to_numeric(
+                    filtered[
+                        measure
+                    ],
+                    errors="coerce",
+                )
+                .fillna(0)
+            )
+
+
+            total = float(
+                exposure_values.sum()
+            )
+
+
+            if total <= 0:
+
+                empty_state(
+                    (
+                        "No exposure for this measure "
+                        "in the current scope."
+                    )
+                )
+
+            else:
+
+                concentration_frame = (
+                    filtered.copy()
+                )
+
+
+                concentration_frame[
+                    measure
+                ] = exposure_values
+
+
+                grouped = (
+                    concentration_frame
+                    .groupby(
+                        concentration_frame[
+                            column
+                        ]
+                        .fillna(
+                            "UNKNOWN"
+                        )
+                    )[
+                        measure
+                    ]
+                    .sum()
+                    .sort_values(
+                        ascending=False
+                    )
+                )
+
+
+                top3_share = (
+                    grouped
+                    .head(3)
+                    .sum()
+                    / total
+                )
+
+
+                st.caption(
+                    (
+                        f"Top 3 of {len(grouped):,} "
+                        f"{dim_label.lower()} groups "
+                        f"hold {top3_share:.0%} of "
+                        f"{fmt_money(total)}"
+                    )
+                )
+
+
+                st.plotly_chart(
+                    fig_exposure_by_group(
+                        concentration_frame,
+                        column,
+                        measure,
+                        color=(
+                            BLACK
+                            if gross
+                            else PINK
+                        ),
+                        top=12,
+                    ),
+                    theme=None,
+                    config=PLOTLY_CONFIG,
+                    width="stretch",
+                    key=(
+                        "sla_concentration"
+                    ),
+                )
