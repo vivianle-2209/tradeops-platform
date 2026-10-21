@@ -1,4 +1,4 @@
-# TradeOps — Trading Operations Analytics & Exception Management Platform
+# TradeOps - Trading Operations Analytics & Exception Management Platform
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/)
 
