@@ -3,7 +3,9 @@
 __pycache__/
 *.pyc
 
-
+data/raw/
+data/cleaned/
+data/processed/
 
 .agents\skills
 .claude\skills
