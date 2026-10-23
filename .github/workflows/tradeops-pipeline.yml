@@ -15,7 +15,8 @@ concurrency:
 jobs:
   run-tradeops-pipeline:
     runs-on: ubuntu-latest
-
+    env:
+      TRADEOPS_RUN_ID: gha-${{ github.run_id }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,55 +28,66 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+        run: python -m pip install -r requirements-dev.txt
 
-      - name: Run TradeOps pipeline
+      - name: Run offline automated tests
+        id: tests
+        # No API secrets in this step. conftest also blocks HTTP/socket traffic and
+        # refuses to open the production database.
+        run: python -m pytest -q
+
+      - name: Persist TradeOps operational transaction
+        id: persist
         env:
           ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
-          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
-          N8N_INCIDENTS_URL: ${{ secrets.N8N_INCIDENTS_URL }}
-        run: |
-          python run_pipeline.py
+        run: python run_pipeline.py --persist-only --run-id "$TRADEOPS_RUN_ID"
 
-      - name: Upload pipeline outputs
+      - name: Publish durable state before external delivery
+        id: publish
+        if: always() && steps.tests.outcome == 'success' && steps.persist.outcome != 'skipped'
+        shell: bash
+        run: |
+          git config user.name "tradeops-bot"
+          git config user.email "tradeops-bot@users.noreply.github.com"
+          git add -- data/tradeops.duckdb
+          if ! git diff --cached --quiet; then
+            git commit -m "Persist TradeOps state and outbox [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Deliver committed outbox
+        id: dispatch
+        # Previously committed retries also run during source outages. A failed
+        # source step still keeps the overall workflow red.
+        if: always() && steps.tests.outcome == 'success' && steps.persist.outcome != 'skipped' && steps.publish.outcome == 'success'
+        env:
+          N8N_WEBHOOK_URL: ${{ secrets.N8N_WEBHOOK_URL }}
+        run: python run_pipeline.py --dispatch-only --run-id "$TRADEOPS_RUN_ID"
+
+      - name: Publish delivery results including retryable failures
+        if: always() && steps.tests.outcome == 'success' && steps.dispatch.outcome != 'skipped'
+        shell: bash
+        run: |
+          git add -- data/tradeops.duckdb
+          if ! git diff --cached --quiet; then
+            git commit -m "Persist TradeOps delivery status [skip ci]"
+            git push origin HEAD:main
+          fi
+
+      - name: Upload pipeline diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tradeops-pipeline-output-${{ github.run_number }}
           path: |
-            data/raw/
-            data/cleaned/
-            data/processed/
-            data/state/
+            data/tradeops.duckdb
             logs/
           if-no-files-found: ignore
           retention-days: 7
-
-      - name: Persist TradeOps database and state
-        if: success()
-        shell: bash
-        run: |
-          git config user.name "tradeops-bot"
-          git config user.email "tradeops-bot@users.noreply.github.com"
-
-          git add data/tradeops.duckdb
-
-          if [ -f data/state/break_lifecycle.csv ]; then
-            git add -f data/state/break_lifecycle.csv
-          fi
-
-          if [ -f data/state/dispatch_state.csv ]; then
-            git add -f data/state/dispatch_state.csv
-          fi
-
-          if git diff --cached --quiet; then
-            echo "No persistent TradeOps changes to commit."
-          else
-            git commit -m "Update TradeOps runtime data [skip ci]"
-            git push origin HEAD:main
-          fi

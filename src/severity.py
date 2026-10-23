@@ -1,7 +1,14 @@
+
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import os
 
 import numpy as np
 import pandas as pd
+from src.contracts import BREAK, normalize_frame
 
 
 INPUT_PATH = "data/processed/trade_breaks.csv"
@@ -224,7 +231,7 @@ def status_score(row):
         "",
     )
 
-    if status == "FAILED":
+    if pd.notna(status) and status == "FAILED":
         return 20
 
     return 0
@@ -289,6 +296,9 @@ def severity_level(score):
 def score_breaks(df):
 
     df = df.copy()
+
+    if df.empty:
+        return normalize_frame(df, BREAK)
 
     df["severity_score"] = df.apply(
         calculate_severity,

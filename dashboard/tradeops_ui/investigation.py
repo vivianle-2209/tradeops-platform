@@ -127,7 +127,7 @@ def trade_options(
             ),
 
             symbol_exec=(
-                "symbol_exec",
+                "symbol",
                 "first",
             ),
 

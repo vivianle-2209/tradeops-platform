@@ -1,1125 +1,325 @@
-# TradeOps - Trading Operations Analytics & Exception Management Platform
+# TradeOps - Trading Operations Analytics & Exception Management
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/)
 
-TradeOps is an end-to-end post-trade operations platform that simulates execution-to-clearing reconciliation, detects operational breaks, prioritises exceptions using deterministic severity and SLA rules, and escalates high-risk incidents through n8n and Jira.
+TradeOps is a single-worker Python portfolio project for execution-to-clearing
+reconciliation, exception prioritisation, persistent incident tracking, SLA
+monitoring, and n8n/Jira escalation. It uses DuckDB, Streamlit, GitHub Actions,
+n8n and Jira. The existing white/black/pink dashboard remains the presentation layer.
+Market trades come from Alpaca's IEX feed; internal execution attributes and
+clearing records are deliberately simulated. No real orders are placed.
 
-The project was built to explore how trading operations, exception management, workflow automation, data engineering, and operational analytics fit together in a realistic end-to-end system.
+## Architecture
 
-## Live Demo
-
-**Streamlit dashboard**
-
-https://vivianle-2209-tradeops-platform-dashboardapp-qveqlz.streamlit.app/
-
-The deployed application is backed by a scheduled GitHub Actions pipeline that refreshes the operational data automatically.
-
----
-
-## What the Platform Does
-
-TradeOps models a simplified post-trade workflow:
-
-```text
-Market Trade
-    ↓
-Execution Record
-    ↓
-Clearing Record
-    ↓
-Reconciliation
-    ↓
-Exception Detection
-    ↓
-Severity + SLA Assessment
-    ↓
-Operational Dashboard
-    ↓
-HIGH / CRITICAL Escalation
-    ↓
-n8n
-    ↓
-Jira Incident
+```mermaid
+flowchart TD
+    A[Alpaca market data] --> B[Paginated checkpointed ingestion]
+    B --> C[Validation and stable trade identity]
+    C --> D[Deterministic demo execution and clearing]
+    D --> T
+    subgraph T[One DuckDB transaction]
+        E[Persistent executions and clearing] --> F[Reconciliation]
+        F --> G[Persistent incidents and SLA]
+        G --> H[Current state and historical observations]
+        G --> I[Durable incident outbox]
+        H --> J[Run metadata and checkpoints]
+    end
+    T --> K[Publish committed database]
+    K --> L[Outbox dispatcher]
+    L --> M[n8n]
+    M --> N[Jira]
+    L --> O[Persist delivered or retry status]
+    H --> P[Streamlit dashboard]
+    G --> P
 ```
 
-The platform currently supports:
+Ingestion windows are transport boundaries. **DuckDB is the operational source of
+truth.** Source records, unresolved incidents and pending delivery survive beyond
+the window that originally introduced them. CSVs under `data/processed` are legacy
+standalone-script exports, not authoritative pipeline state. Old lifecycle and
+dispatch CSVs are not read or recreated by the worker.
 
-- multi-symbol US equity market-data ingestion
-- execution record construction
-- synthetic clearing generation
-- controlled break injection
-- deterministic reconciliation
-- trade-break classification
-- quantitative severity scoring
-- SLA monitoring
-- persistent break lifecycle tracking
-- duplicate-dispatch prevention
-- DuckDB analytical storage
-- Streamlit operational dashboards
-- n8n workflow automation
-- Jira incident escalation
-- scheduled cloud execution using GitHub Actions
+The worker remains a normal sequential Python program; there are no services,
+queues, brokers or background jobs inside Streamlit. Domain functions are directly
+callable and testable, and the major boundaries use explicit typed table contracts.
 
----
+## Identity and contracts
 
-# Architecture
+| Identifier | Meaning |
+| --- | --- |
+| `trade_id` | Permanent SHA-256 identity of JSON-encoded feed/source, symbol, UTC execution date, exchange/venue and source trade ID. Independent of batch order and run. |
+| `run_id` | One logical worker attempt, UUID by default. Supply the same `--run-id` to retry it. GitHub uses `gha-<github.run_id>`, stable across workflow reruns. |
+| `snapshot_id` | Deterministic hash of the logical run ID; identifies one committed historical observation. |
+| `snapshot_number` | Human-readable ordinal, allocated transactionally starting at **1**. Failed runs and an initially empty no-data run do not consume it. |
+| `dedup_key` | Permanent `trade_id:exception_type` incident identity. |
+| `break_id` | Deterministic hash of the incident key; stable across observations and reopening. |
+| `incident_id` | Stable incident entity identity, separately named for event consumers. |
+| `event_id` | Hash of incident ID and monotonically increasing event version. Unchanged during delivery retries. |
 
-```text
-                         ┌──────────────────────┐
-                         │ Alpaca Market Data   │
-                         │      IEX Feed        │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │      Ingestion       │
-                         │   Multi-Symbol Data  │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │     Cleaning         │
-                         │  Normalised Trades   │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ Execution Enrichment │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │ Synthetic Clearing   │
-                         │ + Injected Failures  │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                         ┌──────────────────────┐
-                         │   Reconciliation     │
-                         │  Exception Detection │
-                         └──────────┬───────────┘
-                                    │
-                                    ▼
-                     ┌───────────────────────────┐
-                     │ Severity + SLA + Lifecycle│
-                     └─────────────┬─────────────┘
-                                   │
-                   ┌───────────────┴────────────────┐
-                   │                                │
-                   ▼                                ▼
-        ┌──────────────────────┐        ┌──────────────────────┐
-        │       DuckDB         │        │        n8n           │
-        │ Operational Storage  │        │ Workflow Automation  │
-        └──────────┬───────────┘        └──────────┬───────────┘
-                   │                               │
-                   ▼                               ▼
-        ┌──────────────────────┐        ┌──────────────────────┐
-        │      Streamlit       │        │ AI-Assisted Triage   │
-        │  Operations Dashboard│        └──────────┬───────────┘
-        └──────────────────────┘                   │
-                                                   ▼
-                                        ┌──────────────────────┐
-                                        │ Deduplication / Gate │
-                                        └──────────┬───────────┘
-                                                   │
-                                                   ▼
-                                        ┌──────────────────────┐
-                                        │        Jira          │
-                                        │ Incident Management  │
-                                        └──────────────────────┘
-```
+`src/contracts.py` defines explicit execution, clearing, reconciliation, break,
+incident, outbox, run and historical-observation column types. Required identities,
+economics, timestamps, finite values, and key uniqueness are validated at stage
+boundaries. Invalid input rejects the batch before checkpoint advancement.
 
----
+Both execution and clearing evidence retain their own symbol, side, account,
+currency, quantity, price, venue/source and timestamps. Unknown evidence stays
+null. A separate canonical `symbol` supports display and filtering of orphan
+clearing records; it does not fabricate execution-side evidence.
 
-# Deployment Architecture
+Synthetic account, side, trader, order, clearing identity, latency and failure
+scenario derive from permanent trade identity. They cannot change because a
+record moved within a batch. Clearing is generated only for newly persisted
+executions, with about 4.2% of identities assigned controlled break scenarios.
 
-The deployed project separates the **backend pipeline** from the **frontend dashboard**.
+## Ingestion, checkpoints and replay
 
-```text
-GitHub Actions
-    │
-    │ scheduled every 30 minutes
-    ▼
-run_pipeline.py
-    │
-    ├── fetch market data
-    ├── build executions
-    ├── generate clearing
-    ├── reconcile
-    ├── score severity
-    ├── calculate SLA
-    ├── update lifecycle
-    ├── dispatch eligible incidents
-    └── rebuild DuckDB
-    │
-    ▼
-data/tradeops.duckdb
-    │
-    ▼
-GitHub repository
-    │
-    ▼
-Streamlit Community Cloud
-```
+`src/ingestion.py` consumes every API page, detects repeated page tokens, validates
+responses, and reports per-symbol errors. It reads checkpoints but never writes
+them. A successful all-symbol batch commits its ending positions in the same
+transaction as the operational data. Any symbol failure rejects the entire batch;
+no symbol's checkpoint advances on a partial or failed cycle.
 
-GitHub Actions acts as the scheduled **worker**, while Streamlit acts as the **presentation layer**.
+The default first lookback is 30 minutes, with two minutes of overlap on subsequent
+runs. Stable identities deduplicate overlap. Catch-up fetches are capped at 24
+hours per symbol per run; the checkpoint advances only to the end actually fetched,
+so a long interruption is caught up incrementally rather than skipped.
 
-This avoids making the dashboard responsible for running background jobs.
+An empty successful response is `SUCCESS_NO_DATA`, not inferred market closure.
+We do not classify outages as closed markets or guess market calendars.
 
----
-
-# Market Universe
-
-The current test universe contains seven US equities:
-
-```text
-AAPL
-AMZN
-GOOGL
-META
-MSFT
-NVDA
-TSLA
-```
-
-The market universe is configurable in:
-
-```text
-src/ingestion.py
-```
-
----
-
-# End-to-End Pipeline
-
-The entire pipeline is orchestrated through:
+After review, an intentional real run uses:
 
 ```bash
 python run_pipeline.py
 ```
 
-Current processing stages:
-
-```text
-1. Market Data Ingestion
-2. Data Cleaning
-3. Execution Enrichment
-4. Synthetic Clearing Generation
-5. Reconciliation
-6. Severity Scoring
-7. SLA + Lifecycle Processing
-8. DuckDB Loading
-9. n8n Dispatch
-```
-
-The pipeline uses structured logging and reports the status and duration of each stage.
-
----
-
-# 1. Market Data Ingestion
-
-**File**
-
-```text
-src/ingestion.py
-```
-
-Trade data is retrieved from the Alpaca Market Data API using the IEX feed.
-
-The ingestion layer supports:
-
-- multiple symbols
-- configurable time windows
-- API authentication through environment variables
-- per-symbol retrieval
-- combined output
-- request timeout handling
-
-Output:
-
-```text
-data/raw/market_trades_raw.csv
-```
-
----
-
-# 2. Data Cleaning
-
-**File**
-
-```text
-src/cleaning.py
-```
-
-Raw market records are converted into a standard internal TradeOps schema.
-
-The stage performs:
-
-- timestamp parsing
-- numeric conversion
-- symbol standardisation
-- venue standardisation
-- invalid-record filtering
-- duplicate removal
-- deterministic sorting
-- internal trade-ID generation
-- execution-notional calculation
-
-Example internal ID:
-
-```text
-TRD-000001
-```
-
-Output:
-
-```text
-data/cleaned/market_trades_cleaned.csv
-```
-
----
-
-# 3. Execution Enrichment
-
-**File**
-
-```text
-src/enrich_executions.py
-```
-
-Clean market trades are transformed into internal execution records.
-
-Additional fields include:
-
-```text
-trade_id
-symbol
-side
-account_id
-trader_id
-order_id
-venue
-currency
-execution_notional
-record_source
-```
-
-Output:
-
-```text
-data/processed/executions.csv
-```
-
----
-
-# 4. Synthetic Clearing
-
-**File**
-
-```text
-src/generate_clearing.py
-```
-
-Clearing records are generated from the execution population.
-
-Controlled operational failures are deliberately injected to test the downstream reconciliation and exception-management logic.
-
-Example scenarios include:
-
-```text
-QUANTITY_MISMATCH
-PRICE_MISMATCH
-SIDE_MISMATCH
-ACCOUNT_MISMATCH
-CURRENCY_MISMATCH
-SETTLEMENT_FAILED
-LATE_CLEARING
-MISSING_CLEARING_RECORD
-MISSING_EXECUTION_RECORD
-DUPLICATE_CLEARING_RECORD
-```
-
-Output:
-
-```text
-data/processed/clearing.csv
-```
-
----
-
-# 5. Reconciliation Engine
-
-**File**
-
-```text
-src/reconciliation.py
-```
-
-The reconciliation engine compares execution and clearing records.
-
-Each trade is classified as either:
-
-```text
-MATCHED
-```
-
-or one or more operational exceptions.
-
-Outputs:
-
-```text
-data/processed/reconciliation_results.csv
-data/processed/trade_breaks.csv
-```
-
-## Break Identity
-
-Every exception receives a `break_id`.
-
-A logical incident is identified using:
-
-```text
-dedup_key = trade_id:exception_type
-```
-
-Example:
-
-```text
-TRD-000842:PRICE_MISMATCH
-```
-
-This key is reused by TradeOps and the downstream automation layer to identify the same incident across repeated pipeline runs.
-
----
-
-# 6. Deterministic Severity Scoring
-
-**File**
-
-```text
-src/severity.py
-```
-
-TradeOps assigns a deterministic severity score to each break.
-
-Severity levels:
-
-| Score | Severity |
-|---:|---|
-| 75–100 | CRITICAL |
-| 50–74 | HIGH |
-| 30–49 | MEDIUM |
-| 0–29 | LOW |
-
-Scoring can incorporate:
-
-- exception type
-- affected notional
-- settlement failure
-- mismatch magnitude
-- latency
-- operational impact
-
-Output:
-
-```text
-data/processed/trade_breaks_scored.csv
-```
-
-## Source-of-Truth Principle
-
-TradeOps remains authoritative for:
-
-```text
-exception_type
-severity
-severity_score
-```
-
-AI is used to assist investigation and root-cause triage, but it cannot override deterministic operational classifications.
-
----
-
-# 7. SLA Monitoring
-
-**File**
-
-```text
-src/sla.py
-```
-
-Each severity level receives an operational SLA.
-
-| Severity | SLA |
-|---|---:|
-| CRITICAL | 15 minutes |
-| HIGH | 30 minutes |
-| MEDIUM | 60 minutes |
-| LOW | 240 minutes |
-
-Possible states include:
-
-```text
-WITHIN_SLA
-AT_RISK
-BREACHED
-CLOSED
-```
-
-Output:
-
-```text
-data/processed/trade_breaks_sla.csv
-```
-
-The Streamlit dashboard can also re-age open incidents using the current wall-clock time.
-
----
-
-# 8. Persistent Break Lifecycle
-
-TradeOps keeps lifecycle state across pipeline executions.
-
-Important fields include:
-
-```text
-dedup_key
-first_seen_at
-last_seen_at
-break_status
-resolved_at
-```
-
-Lifecycle behaviour:
-
-```text
-New break
-→ first_seen_at = current time
-→ status = OPEN
-
-Same break appears again
-→ preserve first_seen_at
-→ update last_seen_at
-
-Break disappears
-→ status = RESOLVED
-→ set resolved_at
-```
-
-Persistent state:
-
-```text
-data/state/break_lifecycle.csv
-```
-
-This prevents an unresolved break from becoming artificially “new” every time the pipeline runs.
-
----
-
-# 9. Dispatch State & Deduplication
-
-TradeOps does not repeatedly send unchanged incidents to n8n.
-
-Persistent dispatch state tracks fields such as:
-
-```text
-dedup_key
-last_dispatched_at
-last_dispatched_severity
-last_dispatched_sla_status
-last_dispatched_break_status
-dispatch_attempts
-dispatch_status
-last_dispatch_error
-```
-
-A break is dispatched when:
-
-- it is new
-- a previous dispatch failed
-- severity changes
-- SLA status changes
-- break lifecycle status changes
-
-Unchanged events are skipped.
-
-Only active:
-
-```text
-HIGH
-CRITICAL
-```
-
-breaks are currently eligible for downstream escalation.
-
----
-
-# 10. DuckDB Analytical Storage
-
-**File**
-
-```text
-src/load_database.py
-```
-
-Pipeline outputs are loaded into:
-
-```text
-data/tradeops.duckdb
-```
-
-Core tables include:
-
-```text
-executions
-clearing_records
-reconciliation_results
-trade_breaks
-```
-
-DuckDB provides a lightweight analytical store for the Streamlit application.
-
-The scheduled cloud pipeline refreshes the DuckDB snapshot and persists it back to the repository for the deployed dashboard.
-
----
-
-# Streamlit Operations Dashboard
-
-**Entry point**
-
-```text
-dashboard/app.py
-```
-
-The application contains five primary views:
-
-```text
-Overview
-Exception Queue
-SLA & Risk
-Trade Investigation
-Jira Incidents
-```
-
-## Overview
-
-Provides system-level trading-health metrics including:
-
-- Total Trades
-- Matched Trades
-- Broken Trades
-- Break Rate
-- Critical Breaks
-- Affected Notional
-- SLA Breaches
-- At-Risk Incidents
-- Average Break Age
-- Average Clearing Latency
-- Open Breaks
-
-It also provides symbol-level trading activity and exposure views.
-
----
-
-## Global Market Scope
-
-The dashboard allows users to scope analysis by one or more symbols.
-
-```text
-AAPL  AMZN  GOOGL  META  MSFT  NVDA  TSLA
-```
-
-The selected market scope propagates through:
-
-- KPI calculations
-- reconciliation metrics
-- exception counts
-- risk analysis
-- investigation views
-- Jira incident filtering where symbol metadata is available
-
----
-
-## Exception Queue
-
-The Exception Queue acts as an operational worklist.
-
-Users can review breaks by:
-
-- trade
-- symbol
-- exception type
-- severity
-- SLA state
-- break state
-- affected notional
-
-Individual trades can then be opened in the investigation view.
-
----
-
-## SLA & Risk
-
-The SLA & Risk page focuses on operational exposure.
-
-It provides views such as:
-
-- SLA-state distribution
-- severity distribution
-- break ageing
-- symbol-level risk
-- highest-risk breaks
-- exposure concentration
-- breached / at-risk queues
-
----
-
-## Trade Investigation
-
-The investigation view provides drill-down into a single trade.
-
-It brings together:
-
-```text
-Execution Record
-Clearing Record
-Reconciliation Result
-Break Details
-Severity
-SLA
-Lifecycle
-```
-
-This provides an auditable explanation of why a trade was classified as a break.
-
----
-
-# n8n + Jira Integration
-
-**File**
-
-```text
-src/send_to_n8n.py
-```
-
-Eligible incidents are sent to an n8n webhook.
-
-The payload includes:
-
-```text
-identity
-trade details
-reconciliation evidence
-financial exposure
-clearing information
-risk classification
-SLA information
-lifecycle information
-```
-
-n8n then performs downstream workflow automation including:
-
-```text
-TradeOps event
-    ↓
-Deduplication
-    ↓
-AI-assisted root-cause triage
-    ↓
-Confidence / control logic
-    ↓
-Jira create or update
-    ↓
-Incident registry
-    ↓
-Audit trail
-```
-
-TradeOps remains authoritative for deterministic exception and severity fields.
-
----
-
-# Jira Incident Dashboard
-
-The Streamlit application also exposes an incident-registry view sourced from the n8n/Jira integration.
-
-The registry is designed to display:
-
-```text
-Jira Ticket
-Trade ID
-Symbol
-Break Type
-Severity
-TradeOps Status
-Jira Status
-Jira Priority
-Jira Assignee
-First Seen
-Last Seen
-```
-
-The historical Jira registry is intentionally separate from the current TradeOps break snapshot.
-
-Therefore:
-
-```text
-Total historical Jira incidents
-```
-
-does not necessarily equal:
-
-```text
-Current open TradeOps breaks
-```
-
-### Current Integration Note
-
-The current incident registry successfully retrieves historical Jira/TradeOps records, while richer Jira metadata synchronisation such as status, priority, assignee, and lifecycle mapping is still being refined.
-
----
-
-# GitHub Actions Automation
-
-Workflow:
-
-```text
-.github/workflows/tradeops-pipeline.yml
-```
-
-The pipeline runs:
-
-```text
-every 30 minutes
-```
-
-and can also be triggered manually.
-
-The workflow:
-
-```text
-Checkout repository
-→ Set up Python
-→ Install dependencies
-→ Run TradeOps pipeline
-→ Upload runtime artifacts
-→ Persist DuckDB and lifecycle state
-→ Push refreshed state to main
-```
-
-Runtime artifacts are retained temporarily for debugging.
-
-Persistent operational state includes:
-
-```text
-data/tradeops.duckdb
-data/state/break_lifecycle.csv
-data/state/dispatch_state.csv
-```
-
-This allows the deployed Streamlit dashboard to receive refreshed data without requiring a local Windows machine to remain online.
-
----
-
-# Project Structure
-
-```text
-tradeops-platform/
-│
-├── .github/
-│   └── workflows/
-│       └── tradeops-pipeline.yml
-│
-├── dashboard/
-│   ├── app.py
-│   ├── app_pages/
-│   │   ├── overview.py
-│   │   ├── exception_queue.py
-│   │   ├── sla_risk.py
-│   │   ├── trade_investigation.py
-│   │   └── jira_incidents.py
-│   │
-│   └── tradeops_ui/
-│       ├── components.py
-│       ├── data.py
-│       ├── formatting.py
-│       ├── investigation.py
-│       ├── sidebar.py
-│       ├── tables.py
-│       ├── charts.py
-│       └── theme.py
-│
-├── data/
-│   ├── raw/
-│   ├── cleaned/
-│   ├── processed/
-│   ├── state/
-│   └── tradeops.duckdb
-│
-├── src/
-│   ├── ingestion.py
-│   ├── cleaning.py
-│   ├── enrich_executions.py
-│   ├── generate_clearing.py
-│   ├── reconciliation.py
-│   ├── severity.py
-│   ├── sla.py
-│   ├── load_database.py
-│   ├── query_database.py
-│   └── send_to_n8n.py
-│
-├── run_pipeline.py
-├── requirements.txt
-├── .gitignore
-└── README.md
-```
-
----
-
-# Running Locally
-
-## 1. Clone the repository
+For intentional replay/backfill (live API access; **not a test command**):
 
 ```bash
-git clone https://github.com/vivianle-2209/tradeops-platform.git
-cd tradeops-platform
+python run_pipeline.py --start 2026-10-20T13:30:00Z --end 2026-10-20T14:30:00Z --symbols AAPL --run-id backfill-20261020-aapl
 ```
 
-## 2. Create a virtual environment
+An explicit `--start` does not advance the live checkpoint. Retrying a committed
+run ID returns its existing state without refetching or duplicating history. Use
+a new run ID for a new observation. Replay is bounded by provider feed entitlement
+and historical availability.
 
-Windows:
+## Incidents and SLA
 
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-```
+`src/sla.py` merges observed breaks into durable incidents:
 
-macOS / Linux:
+- New break: OPEN, stable first/last seen, episode 1.
+- Observed again: preserve `first_seen_at`; update `last_seen_at` and evidence.
+- Outside the current window: remain OPEN, `is_observed=false`, continue ageing.
+- Corrected evidence for that trade and exception: RESOLVED with timestamp/reason.
+- Reappears after resolution: reopen the same incident and increment its episode.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-```
+Absence is never resolution. Unknown counterpart values cannot prove a correction.
+SLA age is based on the original persistent `first_seen_at`; reopening retains
+lifetime age conservatively. `episode_started_at` separately records recurrence.
+Resolved age freezes at resolution. Current thresholds are critical 15 minutes,
+high 30, medium 60, low 240, with AT_RISK at 75% and BREACHED at the deadline.
+The shared rule is used by the worker and optional dashboard live clock.
 
-## 3. Install dependencies
+`src.load_database.resolve_incident(db_path, dedup_key, reason)` is the explicit
+operator-resolution API. It requires an auditable reason and commits resolution
+and its outbox event together. If the source still shows the break on a later
+observation, it reopens. No new write controls have been added to the public UI.
+Because clearing is simulated, real corrections require supplied clearing updates
+through `persist_run` or explicit operator resolution; old simulated evidence is
+not automatically healed by a new window.
 
-```bash
-pip install -r requirements.txt
-```
+## Transactions, tables and schema evolution
 
-## 4. Configure environment variables
+`src/storage.py` owns explicit DDL and versioned `schema_migrations`.
+`src/load_database.py` owns one operational transaction containing:
 
-Create a local `.env` file containing the required integration credentials.
+1. Execution/clearing upserts and reconciliation results.
+2. Incident lifecycle and SLA changes.
+3. Meaningful state-change events in the outbox.
+4. Historical observations and run summary.
+5. Checkpoint advancement.
 
-Example variable names:
+Any exception rolls back all five. The next retry can safely reuse the same run ID.
+Failed-attempt diagnostics are recorded separately without a snapshot or source
+checkpoint. HTTP delivery outcomes are necessarily recorded after that transaction.
 
-```text
-ALPACA_API_KEY
-ALPACA_SECRET_KEY
-N8N_WEBHOOK_URL
-```
+| Table/view | Grain and purpose |
+| --- | --- |
+| `executions` | One permanent execution per trade. |
+| `clearing_records` | One record per clearing ID, including genuine duplicate messages. A supplied clearing population replaces evidence only for its supplied trades. |
+| `reconciliation_results` | Latest comparison per persistent trade. |
+| `incidents` | One durable incident per dedup key, including resolved incidents. |
+| `trade_breaks` | Compatibility view over incidents for the dashboard. |
+| `ingestion_checkpoints` | Last committed fetched position per source/symbol. |
+| `incident_outbox` | One immutable payload per incident event version, with mutable delivery metadata. |
+| `pipeline_runs` | One logical run, source/delivery outcomes, optional snapshot ordinal and operational summary. |
+| `reconciliation_history` | One comparison per snapshot/trade. |
+| `trade_breaks_history` | One incident observation per snapshot/dedup key. |
+| `schema_migrations` | Applied schema version. |
 
-Do not commit credentials to Git.
+The schema is initialized lazily on the first intentional write. Migration 1 can
+replace only the known **empty** legacy operational tables left by the reset. It
+refuses nonempty legacy data. Backups, archives and unrelated tables are never
+removed. Future schema changes require a new explicit migration/version.
 
-## 5. Run the pipeline
+**The refactor does not seed or run the real database.** Before the first source
+trade there is no historical snapshot. The first successful real data run allocates
+Snapshot #1; tests prove this using temporary databases.
 
-```bash
-python run_pipeline.py
-```
+## Outbox and n8n/Jira integration
 
-## 6. Launch the dashboard
+An incident's lifecycle change and its outbox event are committed together.
+`src/events.py` preserves the existing nested TradeOps payload sections and adds
+schema version, event identity/type/version, incident identity and full evidence.
+
+- New HIGH/CRITICAL incident: `ESCALATE`.
+- Already escalated incident with meaningful evidence, severity, SLA or episode change: `UPDATE`.
+- Already escalated incident resolves: `RESOLVED`.
+- Unrelated LOW/MEDIUM incident: persist it, create no escalation event.
+
+Changing age or `last_seen_at` alone does not produce a new event. Once escalation
+intent is recorded, downgrades/resolutions continue to emit updates even while an
+older escalation event is awaiting delivery.
+
+`src/send_to_n8n.py` reads committed pending events and sends them in incident
+version order. Failures remain retryable with bounded exponential backoff; they
+do not depend on the latest source window. The payload and `Idempotency-Key` header
+carry the same stable event ID on retry. Successful delivery is marked immediately
+per event, rather than after the whole batch.
+
+Delivery is **at least once**. A crash after remote acceptance but before local
+acknowledgement can resend an event. Receiver-side `event_id` deduplication is
+needed for exactly-once business effects. Existing n8n deduplication remains useful,
+but it must allow newer event versions for the same incident. A dedup gate based
+only on `dedup_key` may suppress updates. The refactor does not modify n8n or Jira;
+those live compatibility assumptions must be verified before intentional delivery.
+A successful HTTP response confirms webhook acceptance, not final Jira completion.
+
+## Failure handling and GitHub Actions
+
+Outcomes persisted in `pipeline_runs` distinguish `SUCCESS`, `SUCCESS_NO_DATA`,
+`PARTIAL_INGESTION`, `INGESTION_FAILED`, `VALIDATION_FAILED`, `DATABASE_FAILED`,
+`DISPATCH_PARTIAL_FAILURE`, and `DISPATCH_FAILED`. Dispatch counters remain separate
+from source status. Actual failures return a nonzero CLI exit code.
+
+The workflow retains its 30-minute schedule and concurrency guard:
+
+1. Install declared dependencies and run the offline pytest suite, without secrets.
+2. Persist source state with `--persist-only` and a stable workflow run ID.
+3. Publish the committed DuckDB file **before** external delivery; failure prevents dispatch.
+4. Run `--dispatch-only` against that committed outbox.
+5. Publish delivery/retry outcomes even if dispatch reports failure.
+
+A failed test blocks source ingestion, dispatch and all runtime-state commits.
+Failure metadata may be published after a failed source cycle. The database now
+contains lifecycle and dispatch state; no lifecycle/dispatch CSVs are committed.
+No Git operations are performed by the local Python worker itself.
+
+## Exposure semantics
+
+These are explainable operational risk proxies, not currency-converted loss or P&L:
+
+| Measure | Formula |
+| --- | --- |
+| Execution notional | Execution quantity * execution price; null if execution missing. |
+| Clearing notional | Canonical clearing quantity * clearing price; null if clearing missing. |
+| Trade gross exposure | Maximum known execution/clearing notional. |
+| Quantity mismatch impact | Absolute quantity difference * execution price. |
+| Price mismatch impact | Absolute price difference * execution quantity. |
+| Missing side, duplicate, ownership/direction/currency/status/latency exception | Full known gross exposure. |
+| Trade affected notional | Maximum exception impact for the trade; zero when matched. |
+
+Exception impact is separate from the repeated trade-level exposure. Monetary
+totals count each OPEN trade once. Group charts attribute a trade to its largest
+impact exception, then highest severity score, then stable incident key, so group
+totals also sum to the grand total. Exception counts remain one row per incident.
+Unknown execution-side values remain null even when clearing-side exposure is known.
+
+## Streamlit and historical analytics
+
+Run the existing dashboard from the repository root:
 
 ```bash
 python -m streamlit run dashboard/app.py
 ```
 
----
+Overview, Exception Queue, SLA & Risk, Trade Investigation, Operations Performance
+and Jira Incidents retain the existing theme and layout. Stable IDs drive lookups;
+canonical symbol filtering includes orphan clearing records. Empty filtered data
+renders an empty state instead of dereferencing a missing chart.
 
-# Design Decisions
+`src/analytics.py` contains parameterized historical SQL. The shared dashboard data
+layer caches scoped summaries, trends, severity counts and selected-snapshot detail
+with bounded caches. Date boundaries use the selected timezone. Symbol scope is
+applied before summary, exposure and weighted break-rate aggregation; unfiltered
+run totals cannot override a symbol selection. The page loads raw observations
+only for the selected snapshot. Related current tables are read under one database
+transaction. Expected pre-history emptiness is distinguished from query failures.
 
-## Why Python?
+Historical totals are **state observations across runs**, not a deduplicated market
+tape or new-trade volume. Persistent trades can appear in multiple snapshots.
+Jira registry reads remain independent of DuckDB. The dashboard reports worker
+failure outcomes separately from successful database connectivity.
 
-Python provides a strong ecosystem for:
+## Configuration and local tests
 
-- tabular data processing
-- APIs
-- analytics
-- database interaction
-- automation
-- dashboard development
+Use Python 3.11+ (CI uses 3.13). Install development dependencies:
 
----
-
-## Why DuckDB?
-
-DuckDB is used because this project primarily performs analytical processing over structured tabular data.
-
-It provides:
-
-- fast local analytics
-- SQL querying
-- simple deployment
-- minimal infrastructure
-- direct integration with Pandas
-
-For a production multi-user system, the storage layer could be replaced with PostgreSQL, a cloud warehouse, or another persistent shared database.
-
----
-
-## Why Streamlit?
-
-Streamlit provides a lightweight way to build an operational analytics interface directly on top of Python data logic.
-
-In this architecture, Streamlit is deliberately used as the **frontend**, not as the scheduler.
-
----
-
-## Why GitHub Actions?
-
-The original local prototype used Windows Task Scheduler.
-
-The deployed architecture now uses GitHub Actions so the pipeline can run independently of the developer's computer.
-
-This creates a clearer separation:
-
-```text
-run_pipeline.py = what runs
-
-GitHub Actions = when and where it runs
-
-DuckDB = where analytical state is stored
-
-Streamlit = how users view the data
-
-n8n = workflow automation
-
-Jira = incident management
+```bash
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
 ```
 
----
+Tests block real HTTP and socket connections and prohibit opening the production
+DuckDB file. They use mocked clients, temporary databases and Streamlit AppTest.
+Coverage includes identity, deterministic replay, pagination/checkpoints, failures,
+rollback, lifecycle/reopening/SLA, outbox ordering/retries/updates, financial totals,
+historical filtering and dashboard empty states. No test invokes the real pipeline.
 
-## Why n8n?
+`src/config.py` centralizes defaults. Local worker credentials may come from `.env`;
+Actions uses repository secrets. Streamlit's independent incident registry uses
+`st.secrets["N8N_INCIDENT_API_URL"]` and optional `JIRA_BOARD_URL`. Neither `.env`
+nor `.streamlit/secrets.toml` belongs in Git.
 
-n8n is used for the workflow-orchestration layer rather than embedding all incident-management logic directly into Python.
+| Variable | Default/purpose |
+| --- | --- |
+| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Source credentials, needed only for intentional ingestion. |
+| `N8N_WEBHOOK_URL` | Needed only when delivering pending outbox events. |
+| `TRADEOPS_DB_PATH` | `data/tradeops.duckdb`; tests always override it. |
+| `TRADEOPS_SYMBOLS` | MSFT,AAPL,NVDA,AMZN,META,GOOGL,TSLA. |
+| `TRADEOPS_LOOKBACK_MINUTES` | 30 for a source with no checkpoint. |
+| `TRADEOPS_OVERLAP_MINUTES` | 2. |
+| `TRADEOPS_MAX_WINDOW_HOURS` | 24 for bounded catch-up per run. |
+| `TRADEOPS_PAGE_LIMIT` | 1000 per API page; all pages are consumed. |
+| `TRADEOPS_RETRY_SECONDS`, `TRADEOPS_RETRY_MAX_SECONDS` | 60 and 3600. |
+| `TRADEOPS_DISPATCH_BATCH_SIZE` | 100 delivery attempts per invocation. |
 
-This makes the downstream process easier to visualise and separates:
+SLA budgets, escalation severities, price tolerance and latency threshold are named
+constants in the same module. No configuration framework is required.
 
-```text
-deterministic trading logic
-```
+## Why DuckDB, and limits of this demo
 
-from:
+DuckDB keeps typed state, transactions and analytics in one explainable local file.
+It suits this **single-writer**, periodically scheduled portfolio architecture and
+short read-only dashboard connections. No client-server database is needed to
+make lifecycle tracking or an outbox correct inside one committed state file.
 
-```text
-workflow automation and AI-assisted triage
-```
+The supported topology has one writer. Do not overlap a local worker with the
+scheduled worker. Separate writer processes and shared mutable files need a
+coordinator; DuckDB's file locking does not make this a distributed system.
+Git distribution of runtime data remains a demo compromise: binary-file growth,
+publication conflicts, deployment lag and disaster recovery remain limitations.
+The pre-delivery publication step prevents remote dispatch from preceding durable
+source/outbox publication, but cannot make the remote acknowledgement atomic.
+Archives/history need a deliberate retention policy as the dataset grows; this
+refactor deletes none. A real multi-worker system would justify a client-server
+transactional database for coordinated writes, durable acknowledgements, access
+controls, operational recovery and independent deployments.
 
----
-
-# Controls & Reliability
-
-The platform includes several operational controls:
-
-- deterministic severity classification
-- canonical deduplication keys
-- persistent incident lifecycle state
-- persistent dispatch state
-- automatic retry for failed dispatches
-- HIGH / CRITICAL escalation gating
-- SLA monitoring
-- separation of deterministic logic and AI reasoning
-- auditable reconciliation evidence
-- scheduled cloud execution
-- pipeline-stage logging
-- GitHub Actions artifacts for debugging
-
----
-
-# Current Limitations
-
-TradeOps is an educational and portfolio project, not a production trading or clearing system.
-
-Current limitations include:
-
-- clearing data is synthetically generated
-- operational failures are deliberately injected
-- market data is sourced from the Alpaca IEX feed
-- DuckDB is used as a lightweight persistence layer
-- GitHub is temporarily used to distribute the refreshed database snapshot
-- historical Jira test incidents remain in the registry
-- richer Jira metadata synchronisation is still being refined
-- execution IDs are generated by the simulated internal pipeline rather than received from a production OMS/EMS
-- the platform does not model every stage of real clearing, settlement, custody, or regulatory reporting
-
----
-
-# Future Improvements
-
-Potential extensions include:
-
-```text
-Real external clearing data
-PostgreSQL / cloud database persistence
-Production-grade message queues
-Event-driven processing
-Better incident lifecycle reconciliation
-Bidirectional Jira status synchronisation
-More robust observability
-Metrics and alerting
-Authentication and role-based access
-Containerisation
-Automated tests
-CI quality gates
-Historical break analytics
-Trade-level lineage
-Microstructure analytics
-```
-
----
-
-# What This Project Demonstrates
-
-TradeOps demonstrates practical experience across:
-
-**Data Engineering**
-- API ingestion
-- data cleaning
-- pipeline orchestration
-- schema design
-- analytical storage
-
-**Trading Operations**
-- execution / clearing reconciliation
-- break detection
-- exception classification
-- SLA monitoring
-- operational incident management
-
-**Software Engineering**
-- modular Python architecture
-- state management
-- logging
-- error handling
-- cloud scheduling
-- deployment
-
-**Analytics**
-- operational KPIs
-- risk exposure
-- break ageing
-- symbol-level analysis
-- investigation workflows
-
-**Automation**
-- n8n orchestration
-- incident deduplication
-- Jira escalation
-- AI-assisted triage
-
----
-
-# Disclaimer
-
-This project is for educational, portfolio, and engineering demonstration purposes only.
-
-It does not execute trades, provide investment advice, or represent a production brokerage, exchange, clearinghouse, or settlement platform.
+The 30-minute schedule cannot promise prompt delivery against a 15-minute critical
+SLA; the dashboard live clock is a read-only view, not an escalation scheduler.
+Synthetic clearing is not a brokerage or settlement feed. There is no FX conversion,
+production authentication/RBAC, external correction subscription or verified live
+Jira workflow update contract. TradeOps does not execute trades or provide investment
+advice. See `REFACTOR_REVIEW.md` for the implementation and validation record.

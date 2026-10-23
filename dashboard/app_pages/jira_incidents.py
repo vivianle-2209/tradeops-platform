@@ -184,7 +184,11 @@ with header_right:
 # Load incident registry
 # ==================================================
 
-incidents = db.load_jira_incidents()
+try:
+    incidents = db.load_jira_incidents()
+except RuntimeError as exc:
+    st.error(str(exc))
+    st.stop()
 
 
 if incidents.empty:
@@ -309,14 +313,14 @@ incidents["jira_last_seen_at"] = (
 if (
     not ctx.breaks.empty
     and "trade_id" in ctx.breaks.columns
-    and "symbol_exec" in ctx.breaks.columns
+    and "symbol" in ctx.breaks.columns
 ):
 
     trade_symbol_map = (
         ctx.breaks[
             [
                 "trade_id",
-                "symbol_exec",
+                "symbol",
             ]
         ]
         .dropna(
@@ -332,7 +336,7 @@ if (
         .set_index(
             "trade_id"
         )[
-            "symbol_exec"
+            "symbol"
         ]
     )
 

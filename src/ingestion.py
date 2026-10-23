@@ -1,374 +1,107 @@
-import os
-from datetime import timedelta
+"""Checkpointed, paginated Alpaca ingestion. Fetching never advances checkpoints."""
 
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from dataclasses import dataclass, field
+from pathlib import Path
+import duckdb
 import pandas as pd
 import requests
-from dotenv import load_dotenv
+from src.config import Settings
+from src.contracts import RunStatus, utc, utc_now
+
+BASE_URL = 'https://data.alpaca.markets/v2/stocks'
 
 
-# --------------------------------------------------
-# Environment
-# --------------------------------------------------
-
-load_dotenv()
-
-API_KEY = os.getenv(
-    "ALPACA_API_KEY"
-)
-
-SECRET_KEY = os.getenv(
-    "ALPACA_SECRET_KEY"
-)
+@dataclass
+class IngestionBatch:
+    trades: pd.DataFrame
+    status: RunStatus
+    checkpoints: dict[str, pd.Timestamp] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+    windows: dict[str, tuple[pd.Timestamp, pd.Timestamp]] = field(default_factory=dict)
 
 
-BASE_URL = (
-    "https://data.alpaca.markets/v2/stocks"
-)
+def read_checkpoints(db_path, source):
+    if not Path(db_path).exists():
+        return {}
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        exists = con.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_name='ingestion_checkpoints'").fetchone()[0]
+        if not exists:
+            return {}
+        return {symbol: utc(position) for symbol, position in con.execute(
+            'SELECT symbol, position FROM ingestion_checkpoints WHERE source = ?', [source]).fetchall()}
 
 
-# --------------------------------------------------
-# TradeOps market basket
-# --------------------------------------------------
-
-WINDOWS_MINUTES = 15
-
-SYMBOLS = [
-    "MSFT",
-    "AAPL",
-    "NVDA",
-    "AMZN",
-    "META",
-    "GOOGL",
-    "TSLA",
-]
-
-
-RAW_OUTPUT_PATH = (
-    "data/raw/market_trades_raw.csv"
-)
-
-
-# --------------------------------------------------
-# Validate credentials
-# --------------------------------------------------
-
-if not API_KEY or not SECRET_KEY:
-
-    raise ValueError(
-        "Alpaca API credentials were not found. "
-        "Check your .env file."
-    )
-
-
-# --------------------------------------------------
-# Fetch trades for one symbol
-# --------------------------------------------------
-
-def fetch_trades(
-    symbol: str,
-    start: str,
-    end: str,
-    limit: int = 1000,
-) -> pd.DataFrame:
-    """
-    Fetch historical IEX trades for one symbol
-    from Alpaca.
-    """
-
-    symbol = (
-        str(symbol)
-        .strip()
-        .upper()
-    )
-
-    url = (
-        f"{BASE_URL}/"
-        f"{symbol}/trades"
-    )
+def fetch_trades(symbol, start, end, limit=None, *, settings=None, client=None):
+    settings = settings or Settings.from_env()
+    client = client or requests
+    if not settings.api_key or not settings.secret_key:
+        raise ValueError('Alpaca credentials are not configured')
+    params = dict(start=utc(start).isoformat(), end=utc(end).isoformat(),
+                  limit=limit or settings.page_limit, feed='iex', sort='asc')
+    headers = {'APCA-API-KEY-ID': settings.api_key, 'APCA-API-SECRET-KEY': settings.secret_key}
+    records, seen_tokens = [], set()
+    while True:
+        response = client.get(f'{BASE_URL}/{symbol}/trades', headers=headers,
+                              params=dict(params), timeout=settings.request_timeout)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or not isinstance(payload.get('trades'), (list, type(None))):
+            raise ValueError('Malformed Alpaca trade response')
+        if 'trades' not in payload:
+            raise ValueError('Alpaca response missing trades')
+        for record in payload.get('trades') or []:
+            if not isinstance(record, dict) or any(key not in record or record[key] is None for key in ['i', 't', 'p', 's', 'x']):
+                raise ValueError('Alpaca record missing identity/economic fields')
+            stamp = utc(record['t'])
+            if not utc(start) <= stamp <= utc(end):
+                raise ValueError('Alpaca returned a record outside the requested interval')
+            records.append(dict(record, i=str(record['i']), symbol=symbol, source=settings.source))
+        token = payload.get('next_page_token')
+        if not token:
+            break
+        if token in seen_tokens:
+            raise ValueError('Repeated pagination token; refusing incomplete window')
+        seen_tokens.add(token)
+        params['page_token'] = token
+    return pd.DataFrame(records)
 
 
-    headers = {
-        "APCA-API-KEY-ID": (
-            API_KEY
-        ),
-        "APCA-API-SECRET-KEY": (
-            SECRET_KEY
-        ),
-    }
-
-
-    params = {
-        "start": start,
-        "end": end,
-        "limit": limit,
-        "feed": "iex",
-        "sort": "asc",
-    }
-
-
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=30,
-    )
-
-    response.raise_for_status()
-
-    payload = response.json()
-
-    trades = payload.get(
-        "trades",
-        [],
-    )
-
-
-    df = pd.DataFrame(
-        trades
-    )
-
-
-    if not df.empty:
-
-        df["symbol"] = (
-            symbol
-        )
-
-
-    return df
-
-
-# --------------------------------------------------
-# Fetch complete symbol basket
-# --------------------------------------------------
-
-def fetch_market_basket(
-    symbols: list[str],
-    start: str,
-    end: str,
-    limit_per_symbol: int = 1000,
-) -> pd.DataFrame:
-    """
-    Fetch trades for all configured symbols and
-    combine them into one raw dataset.
-    """
-
-    frames = []
-
-
-    for symbol in symbols:
-
-        print(
-            f"Fetching {symbol}..."
-        )
-
-
+def ingest(settings=None, *, now=None, start=None, end=None, client=None):
+    settings = settings or Settings.from_env()
+    now = utc(now) if now is not None else utc_now()
+    end = utc(end) if end is not None else now
+    checkpoints = read_checkpoints(settings.db_path, settings.source)
+    frames, positions, errors, windows = [], {}, {}, {}
+    explicit_start = utc(start) if start is not None else None
+    for symbol in settings.symbols:
+        position = checkpoints.get(symbol)
+        begin = explicit_start if explicit_start is not None else (
+            position - pd.Timedelta(minutes=settings.overlap_minutes) if position is not None
+            else end - pd.Timedelta(minutes=settings.initial_lookback_minutes))
+        stop = end if explicit_start is not None else min(end, begin + pd.Timedelta(hours=settings.max_window_hours))
+        if stop < begin:
+            raise ValueError('Ingestion end precedes start/checkpoint')
+        windows[symbol] = (begin, stop)
         try:
-
-            symbol_df = (
-                fetch_trades(
-                    symbol=symbol,
-                    start=start,
-                    end=end,
-                    limit=limit_per_symbol,
-                )
-            )
-
-
-            print(
-                f"  {symbol}: "
-                f"{len(symbol_df)} rows"
-            )
+            frame = fetch_trades(symbol, begin, stop, settings=settings, client=client)
+            if not frame.empty:
+                frames.append(frame)
+            positions[symbol] = stop
+        except (requests.RequestException, ValueError, TypeError) as exc:
+            errors[symbol] = f'{type(exc).__name__}: {exc}'
+    combined = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    if errors:
+        status = RunStatus.INGESTION_FAILED if len(errors) == len(settings.symbols) else RunStatus.PARTIAL_INGESTION
+    else:
+        status = RunStatus.SUCCESS_NO_DATA if combined.empty else RunStatus.SUCCESS
+    # Any failed symbol rejects the entire batch at the persistence boundary.
+    return IngestionBatch(combined, status, positions, errors, windows)
 
 
-            if not symbol_df.empty:
-
-                frames.append(
-                    symbol_df
-                )
-
-
-        except requests.RequestException as exc:
-
-            print(
-                f"  {symbol}: FAILED | "
-                f"{exc}"
-            )
-
-
-    if not frames:
-
-        return pd.DataFrame()
-
-
-    combined = pd.concat(
-        frames,
-        ignore_index=True,
-    )
-
-
-    return combined
-
-
-# --------------------------------------------------
-# Save combined raw dataset
-# --------------------------------------------------
-
-def save_raw_trades(
-    df: pd.DataFrame,
-) -> str:
-    """
-    Save combined multi-symbol trade data.
-    """
-
-    os.makedirs(
-        "data/raw",
-        exist_ok=True,
-    )
-
-
-    df.to_csv(
-        RAW_OUTPUT_PATH,
-        index=False,
-    )
-
-
-    return (
-        RAW_OUTPUT_PATH
-    )
-
-
-# --------------------------------------------------
-# Determine ingestion window
-# --------------------------------------------------
-
-def build_time_window(
-    minutes: int = WINDOWS_MINUTES,
-) -> tuple[str, str]:
-    """
-    Build a recent UTC time window.
-
-    Alpaca may not return trades outside market
-    activity periods, so this function only defines
-    the requested interval.
-    """
-
-    end = pd.Timestamp.now(
-        tz="UTC"
-    )
-
-    start = (
-        end
-        - timedelta(
-            minutes=minutes
-        )
-    )
-
-
-    return (
-        start.isoformat(),
-        end.isoformat(),
-    )
-
-
-# --------------------------------------------------
-# Run
-# --------------------------------------------------
-
-if __name__ == "__main__":
-
-    start_time, end_time = (
-        build_time_window(
-            minutes=WINDOWS_MINUTES
-        )
-    )
-
-
-    print()
-    print(
-        "TradeOps market-data ingestion"
-    )
-
-    print(
-        "-" * 45
-    )
-
-
-    print(
-        f"Start: {start_time}"
-    )
-
-    print(
-        f"End:   {end_time}"
-    )
-
-    print(
-        f"Symbols: "
-        f"{', '.join(SYMBOLS)}"
-    )
-
-
-    df = (
-        fetch_market_basket(
-            symbols=SYMBOLS,
-            start=start_time,
-            end=end_time,
-            limit_per_symbol=1000,
-        )
-    )
-
-
-    if df.empty:
-
-        raise RuntimeError(
-            "No market trade data was returned "
-            "for the configured symbol basket."
-        )
-
-
-    output_path = (
-        save_raw_trades(
-            df
-        )
-    )
-
-
-    print()
-    print(
-        "TradeOps ingestion complete"
-    )
-
-    print(
-        "-" * 45
-    )
-
-
-    print(
-        f"Rows retrieved: "
-        f"{len(df)}"
-    )
-
-
-    print()
-    print(
-        "Rows by symbol:"
-    )
-
-    print(
-        df[
-            "symbol"
-        ]
-        .value_counts()
-        .sort_index()
-        .to_string()
-    )
-
-
-    print()
-    print(
-        "Raw file saved to:"
-    )
-
-    print(
-        output_path
-    )
+if __name__ == '__main__':
+    raise SystemExit('Use python run_pipeline.py; checkpoints commit with operational state.')

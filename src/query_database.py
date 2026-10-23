@@ -1,50 +1,18 @@
+"""Read-only local diagnostic command; importing it has no database side effects."""
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import duckdb
+from src.config import Settings
 
 
-DB_PATH = "data/tradeops.duckdb"
+def main():
+    with duckdb.connect(str(Settings.from_env().db_path), read_only=True) as con:
+        print(con.execute('SHOW TABLES').fetchdf())
+        print(con.execute('SELECT exception_type, severity, COUNT(*) AS break_count FROM trade_breaks GROUP BY ALL').fetchdf())
 
 
-con = duckdb.connect(DB_PATH)
-
-print("\nTables:")
-print(con.execute("SHOW TABLES").fetchdf())
-
-print("\nTrade break summary:")
-print(
-    con.execute(
-        """
-        SELECT
-            exception_type,
-            severity,
-            COUNT(*) AS break_count
-        FROM trade_breaks
-        GROUP BY
-            exception_type,
-            severity
-        ORDER BY
-            break_count DESC
-        """
-    ).fetchdf()
-)
-
-print("\nTop priority breaks:")
-print(
-    con.execute(
-        """
-        SELECT
-            priority_rank,
-            break_id,
-            trade_id,
-            exception_type,
-            severity_score,
-            severity,
-            execution_notional,
-            affected_notional
-        FROM trade_breaks
-        ORDER BY priority_rank
-        LIMIT 10
-        """
-    ).fetchdf()
-)
-
-con.close()
+if __name__ == '__main__':
+    main()

@@ -41,7 +41,7 @@ COLUMN_LABELS = {
     "first_seen_at": "First seen (UTC)",
     "venue": "Venue",
     "account_exec": "Account",
-    "symbol_exec": "Symbol",
+    "symbol": "Symbol",
 }
 
 

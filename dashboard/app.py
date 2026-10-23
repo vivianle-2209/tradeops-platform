@@ -103,6 +103,16 @@ navigation = st.navigation(
             ),
         ),
 
+                st.Page(
+            "app_pages/historical_operations.py",
+            title=(
+                "Operations Performance"
+            ),
+            icon=(
+                ":material/history:"
+            ),
+        ),
+
         st.Page(
             "app_pages/jira_incidents.py",
             title=(
@@ -222,6 +232,12 @@ if data is None:
 # Break snapshot / live SLA
 # --------------------------------------------------
 
+latest_run = data.get('latest_run', pd.DataFrame())
+if not latest_run.empty:
+    worker_status = str(latest_run.iloc[0]['status'])
+    if worker_status not in {'SUCCESS', 'SUCCESS_NO_DATA'}:
+        st.warning(f'Latest pipeline outcome: {worker_status}. See worker logs for details.')
+
 if monitoring[
     "live_sla"
 ]:
@@ -253,7 +269,7 @@ symbol_sources = []
 
 
 if (
-    "symbol_exec"
+    "symbol"
     in data[
         "reconciliation"
     ].columns
@@ -263,7 +279,7 @@ if (
         data[
             "reconciliation"
         ][
-            "symbol_exec"
+            "symbol"
         ]
         .dropna()
         .astype(str)
@@ -272,13 +288,13 @@ if (
 
 
 if (
-    "symbol_exec"
+    "symbol"
     in breaks.columns
 ):
 
     symbol_sources.extend(
         breaks[
-            "symbol_exec"
+            "symbol"
         ]
         .dropna()
         .astype(str)
@@ -398,7 +414,7 @@ with st.sidebar:
 # Store symbol scope alongside filter dictionary.
 # Some page-level logic uses this explicitly.
 filters[
-    "symbol_exec"
+    "symbol"
 ] = selected_symbols
 
 

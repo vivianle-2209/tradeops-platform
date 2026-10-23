@@ -46,7 +46,12 @@ DB_PATH = (
 # SLA behaviour
 # --------------------------------------------------
 
-SLA_AT_RISK_FRACTION = 0.75
+# Streamlit launches from dashboard/ in some deployments.
+import sys
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+from src.metrics import total_exposure, exposure_by_group
+from src.config import SLA_AT_RISK_FRACTION
 
 
 # --------------------------------------------------
@@ -72,6 +77,9 @@ NUMERIC_BREAK_COLUMNS = [
     "sla_consumed_pct",
     "execution_notional",
     "affected_notional",
+    "exception_impact",
+    "trade_exposure",
+    "clearing_notional",
     "clearing_latency_seconds",
     "quantity_exec",
     "quantity_clear",
@@ -92,6 +100,7 @@ TEXT_BREAK_COLUMNS = [
     "break_id",
     "dedup_key",
     "account_exec",
+    "symbol",
     "symbol_exec",
     "symbol_clear",
     "side_exec",
@@ -225,64 +234,20 @@ def prepare_breaks(
 # Main table loading
 # --------------------------------------------------
 
-@st.cache_data(
-    ttl=60,
-    show_spinner=False,
-)
-def load_tables(
-    version: float,
-) -> dict:
-    """
-    Load core TradeOps tables.
-    """
+@st.cache_data(ttl=60, max_entries=8, show_spinner=False)
+def load_tables(version: float) -> dict:
+    # Read related tables under one database snapshot.
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        con.execute('BEGIN TRANSACTION')
+        reconciliation = con.execute('SELECT * FROM reconciliation_results').fetchdf()
+        breaks = con.execute('SELECT * FROM trade_breaks ORDER BY priority_rank').fetchdf()
+        names = {row[0] for row in con.execute('SHOW TABLES').fetchall()}
+        latest_run = con.execute('SELECT * FROM pipeline_runs ORDER BY started_at DESC LIMIT 1').fetchdf() if 'pipeline_runs' in names else pd.DataFrame()
+        con.execute('COMMIT')
+    return dict(reconciliation=parse_timestamps(reconciliation, ['execution_timestamp', 'clearing_timestamp']),
+                breaks=prepare_breaks(breaks), latest_run=latest_run,
+                loaded_at=datetime.now(timezone.utc), version=version)
 
-    reconciliation = run_query(
-        """
-        SELECT *
-        FROM reconciliation_results
-        """
-    )
-
-
-    breaks = run_query(
-        """
-        SELECT *
-        FROM trade_breaks
-        ORDER BY priority_rank
-        """
-    )
-
-
-    reconciliation = (
-        parse_timestamps(
-            reconciliation,
-            [
-                "execution_timestamp",
-                "clearing_timestamp",
-            ],
-        )
-    )
-
-
-    breaks = (
-        prepare_breaks(
-            breaks
-        )
-    )
-
-
-    return {
-        "reconciliation": (
-            reconciliation
-        ),
-        "breaks": breaks,
-        "loaded_at": (
-            datetime.now(
-                timezone.utc
-            )
-        ),
-        "version": version,
-    }
 
 
 # --------------------------------------------------
@@ -442,9 +407,8 @@ def load_jira_incidents() -> pd.DataFrame:
         return incidents
 
 
-    except Exception:
-
-        return pd.DataFrame()
+    except Exception as exc:
+        raise RuntimeError(f"Incident registry is unavailable ({type(exc).__name__})") from exc
 
 
 # --------------------------------------------------
@@ -551,6 +515,11 @@ def clear_caches() -> None:
     load_tables.clear()
     load_trade_records.clear()
     load_jira_incidents.clear()
+    load_history_runs.clear()
+    load_history_observations.clear()
+    load_history_trend.clear()
+    load_history_symbols.clear()
+    load_history_severity.clear()
 
 
 # --------------------------------------------------
@@ -620,124 +589,12 @@ def load_data() -> tuple[
 # Live SLA clock
 # --------------------------------------------------
 
-def apply_live_sla(
-    breaks: pd.DataFrame,
-    now: pd.Timestamp,
-) -> pd.DataFrame:
-    """
-    Re-age OPEN breaks using current wall-clock
-    time while preserving pipeline SLA thresholds.
-    """
+def apply_live_sla(breaks: pd.DataFrame, now: pd.Timestamp) -> pd.DataFrame:
+    from src.sla import age_incident
+    if breaks.empty:
+        return breaks.copy()
+    return pd.DataFrame([age_incident(row, now) for row in breaks.to_dict('records')])
 
-    df = (
-        breaks.copy()
-    )
-
-
-    is_open = (
-        df[
-            "break_status"
-        ]
-        .eq("OPEN")
-    )
-
-
-    live_age = (
-        (
-            now
-            - df[
-                "first_seen_at"
-            ]
-        )
-        .dt.total_seconds()
-        / 60
-    ).clip(
-        lower=0
-    )
-
-
-    df.loc[
-        is_open,
-        "age_minutes",
-    ] = live_age[
-        is_open
-    ]
-
-
-    df[
-        "sla_remaining_minutes"
-    ] = (
-        df[
-            "sla_minutes"
-        ]
-        - df[
-            "age_minutes"
-        ]
-    )
-
-
-    df[
-        "sla_consumed_pct"
-    ] = (
-        df[
-            "age_minutes"
-        ]
-        / df[
-            "sla_minutes"
-        ]
-        * 100
-    )
-
-
-    df[
-        "sla_status"
-    ] = np.select(
-        [
-            ~is_open,
-
-            df[
-                "sla_minutes"
-            ].isna(),
-
-            (
-                df[
-                    "age_minutes"
-                ]
-                >
-                df[
-                    "sla_minutes"
-                ]
-            ),
-
-            (
-                df[
-                    "age_minutes"
-                ]
-                >=
-                (
-                    df[
-                        "sla_minutes"
-                    ]
-                    *
-                    SLA_AT_RISK_FRACTION
-                )
-            ),
-        ],
-
-        [
-            "CLOSED",
-            "UNKNOWN",
-            "BREACHED",
-            "AT_RISK",
-        ],
-
-        default=(
-            "WITHIN_SLA"
-        ),
-    )
-
-
-    return df
 
 
 # --------------------------------------------------
@@ -770,7 +627,7 @@ def apply_reconciliation_scope(
 
 
     if (
-        "symbol_exec"
+        "symbol"
         not in reconciliation.columns
     ):
 
@@ -782,7 +639,7 @@ def apply_reconciliation_scope(
     return (
         reconciliation[
             reconciliation[
-                "symbol_exec"
+                "symbol"
             ]
             .astype(str)
             .isin(
@@ -814,7 +671,7 @@ def apply_break_scope(
 
 
     if (
-        "symbol_exec"
+        "symbol"
         not in breaks.columns
     ):
 
@@ -824,7 +681,7 @@ def apply_break_scope(
     return (
         breaks[
             breaks[
-                "symbol_exec"
+                "symbol"
             ]
             .astype(str)
             .isin(
@@ -897,7 +754,7 @@ def apply_filters(
     # filters elsewhere.
     selected_symbols = (
         filters.get(
-            "symbol_exec"
+            "symbol"
         )
     )
 
@@ -905,13 +762,13 @@ def apply_filters(
     if (
         selected_symbols
         and
-        "symbol_exec"
+        "symbol"
         in breaks.columns
     ):
 
         mask &= (
             breaks[
-                "symbol_exec"
+                "symbol"
             ]
             .astype(str)
             .isin(
@@ -1057,7 +914,7 @@ def compute_kpis(
 
     critical = (
         int(
-            breaks[
+            open_breaks[
                 "severity"
             ]
             .eq("CRITICAL")
@@ -1107,25 +964,7 @@ def compute_kpis(
     # Exposure
     # --------------------------------------------------
 
-    if (
-        "affected_notional"
-        in breaks.columns
-    ):
-
-        affected = float(
-            pd.to_numeric(
-                breaks[
-                    "affected_notional"
-                ],
-                errors="coerce",
-            )
-            .fillna(0)
-            .sum()
-        )
-
-    else:
-
-        affected = 0.0
+    affected = total_exposure(breaks)
 
 
     # --------------------------------------------------
@@ -1286,3 +1125,52 @@ def get_context() -> DashboardContext:
 
 
     return ctx
+
+# History reads are scoped, bounded in cache, and share a consistent DB transaction.
+def _history_query(function, *args):
+    with duckdb.connect(str(DB_PATH), read_only=True) as con:
+        tables = {row[0] for row in con.execute('SHOW TABLES').fetchall()}
+        if 'reconciliation_history' not in tables:
+            return None  # Expected before the first successful run; other errors propagate.
+        con.execute('BEGIN TRANSACTION')
+        result = function(con, *args)
+        con.execute('COMMIT')
+        return result
+
+
+@st.cache_data(ttl=60, max_entries=32, show_spinner=False)
+def load_history_runs(version, start=None, end=None, symbols=(), timezone_name='UTC'):
+    from src.analytics import history_runs
+    result = _history_query(history_runs, start, end, symbols, timezone_name)
+    return pd.DataFrame() if result is None else result
+
+
+@st.cache_data(ttl=60, max_entries=64, show_spinner=False)
+def load_history_trend(version, start=None, end=None, symbols=(), metric='Trades', granularity='Daily', timezone_name='UTC'):
+    from src.analytics import history_trend
+    result = _history_query(history_trend, start, end, symbols, metric, granularity, timezone_name)
+    return pd.DataFrame() if result is None else result
+
+
+@st.cache_data(ttl=60, max_entries=32, show_spinner=False)
+def load_history_symbols(version, start=None, end=None, timezone_name='UTC'):
+    from src.analytics import history_symbols
+    result = _history_query(history_symbols, start, end, timezone_name)
+    return [] if result is None else result
+
+
+@st.cache_data(ttl=60, max_entries=32, show_spinner=False)
+def load_history_observations(version, snapshot_id, symbols=()):
+    from src.analytics import history_observations
+    result = _history_query(history_observations, snapshot_id, symbols)
+    return (pd.DataFrame(), pd.DataFrame()) if result is None else result
+
+
+@st.cache_data(ttl=60, max_entries=32, show_spinner=False)
+def load_history_severity(version, start=None, end=None, symbols=(), timezone_name='UTC'):
+    from src.analytics import history_severity
+    result = _history_query(history_severity, start, end, symbols, timezone_name)
+    return pd.DataFrame() if result is None else result
+
+
+from src.analytics import aggregate_break_rate, aggregate_metric

@@ -9,6 +9,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from tradeops_ui.components import empty_state
+from tradeops_ui.data import exposure_by_group, total_exposure
 from tradeops_ui.formatting import fmt_money, fmt_money_compact, ordered
 from tradeops_ui.theme import (
     BLACK, BORDER, GREY_MID, GREY_TEXT, PINK, PINK_LIGHT,
@@ -139,21 +140,185 @@ def fig_severity_donut(df: pd.DataFrame) -> go.Figure | None:
     return fig
 
 
-def fig_breaks_by_venue(df: pd.DataFrame) -> go.Figure | None:
+def fig_breaks_by_venue(
+    df: pd.DataFrame,
+) -> go.Figure | None:
+
     if df.empty:
         return None
-    data = (df.assign(venue=df["venue"].astype(str))
-              .groupby(["venue", "severity"], dropna=False).size().reset_index(name="count"))
-    venue_order = data.groupby("venue")["count"].sum().sort_values(ascending=False).index.tolist()
-    fig = px.bar(data, x="venue", y="count", color="severity",
-                 category_orders={"venue": venue_order, "severity": SEVERITY_ORDER},
-                 color_discrete_map=SEVERITY_COLORS)
-    fig.update_traces(marker_line_color="#FFFFFF", marker_line_width=1,
-                      hovertemplate="Venue %{x}<br>%{y:,} breaks<extra></extra>")
-    fig = style_fig(fig, height=280, legend=True)
-    fig.update_layout(barmode="stack")
-    fig.update_xaxes(title_text="Venue", type="category")
-    fig.update_yaxes(title_text="Breaks")
+
+    data = (
+        df.assign(
+            venue=(
+                df[
+                    "venue"
+                ]
+                .fillna(
+                    "UNKNOWN"
+                )
+                .astype(str)
+            )
+        )
+        .groupby(
+            [
+                "venue",
+                "severity",
+            ],
+            dropna=False,
+        )
+        .size()
+        .reset_index(
+            name="count"
+        )
+    )
+
+
+    venue_totals = (
+        data
+        .groupby(
+            "venue"
+        )[
+            "count"
+        ]
+        .sum()
+        .rename(
+            "venue_total"
+        )
+    )
+
+
+    total_breaks = int(
+        data[
+            "count"
+        ]
+        .sum()
+    )
+
+
+    data = (
+        data.merge(
+            venue_totals,
+            on="venue",
+            how="left",
+        )
+    )
+
+
+    data[
+        "venue_pct"
+    ] = (
+        data[
+            "count"
+        ]
+        /
+        data[
+            "venue_total"
+        ]
+        .replace(
+            0,
+            pd.NA,
+        )
+        * 100
+    ).fillna(0)
+
+
+    data[
+        "overall_pct"
+    ] = (
+        data[
+            "count"
+        ]
+        /
+        total_breaks
+        * 100
+        if total_breaks
+        else 0
+    )
+
+
+    venue_order = (
+        venue_totals
+        .sort_values(
+            ascending=False
+        )
+        .index
+        .tolist()
+    )
+
+
+    fig = px.bar(
+        data,
+        x="venue",
+        y="count",
+        color="severity",
+        category_orders={
+            "venue": (
+                venue_order
+            ),
+            "severity": (
+                SEVERITY_ORDER
+            ),
+        },
+        color_discrete_map=(
+            SEVERITY_COLORS
+        ),
+        custom_data=[
+            "severity",
+            "venue_total",
+            "venue_pct",
+            "overall_pct",
+        ],
+    )
+
+
+    fig.update_traces(
+        marker_line_color=(
+            "#FFFFFF"
+        ),
+        marker_line_width=1,
+        hovertemplate=(
+            "<b>Venue %{x}</b><br>"
+            "Severity: %{customdata[0]}<br>"
+            "Breaks: %{y:,}<br>"
+            "Venue total: %{customdata[1]:,}<br>"
+            "Share of venue: %{customdata[2]:.1f}%<br>"
+            "Share of all breaks: %{customdata[3]:.1f}%"
+            "<extra></extra>"
+        ),
+    )
+
+
+    fig = style_fig(
+        fig,
+        height=300,
+        legend=True,
+    )
+
+
+    fig.update_layout(
+        barmode="stack",
+        margin=dict(
+            l=8,
+            r=16,
+            t=8,
+            b=60,
+        ),
+    )
+
+
+    fig.update_xaxes(
+        title_text="Venue",
+        type="category",
+        title_standoff=24,
+        automargin=True,
+    )
+
+
+    fig.update_yaxes(
+        title_text="Breaks",
+    )
+
+
     return fig
 
 
@@ -175,11 +340,10 @@ def fig_age_histogram(df: pd.DataFrame) -> go.Figure | None:
 def fig_exposure_by_group(df: pd.DataFrame, column: str, measure: str = "affected_notional",
                           color: str = PINK, top: int | None = None) -> go.Figure | None:
     """Exposure per group with share of total; zero-exposure groups are omitted."""
-    total = df[measure].fillna(0).sum() if not df.empty else 0
+    total = total_exposure(df, measure)
     if total <= 0:
         return None
-    data = (df.assign(**{column: df[column].fillna("UNKNOWN").astype(str)})
-              .groupby(column)[measure].sum().reset_index())
+    data = exposure_by_group(df, column, measure).rename(measure).reset_index()
     data = data[data[measure] > 0].sort_values(measure, ascending=False)
     if top:
         data = data.head(top)
@@ -190,7 +354,7 @@ def fig_exposure_by_group(df: pd.DataFrame, column: str, measure: str = "affecte
 def _by_sla_status(df: pd.DataFrame, value: str | None) -> pd.DataFrame:
     """Count (value=None) or sum `value` per SLA status, in canonical order."""
     status = df["sla_status"].fillna("UNKNOWN").astype(str)
-    data = (status.value_counts() if value is None else df[value].fillna(0).groupby(status).sum())
+    data = (status.value_counts() if value is None else exposure_by_group(df.assign(sla_status=status), "sla_status", value))
     data = data.rename("v").reset_index()
     data.columns = ["sla_status", "v"]
     data["order"] = data["sla_status"].map({s: i for i, s in enumerate(SLA_ORDER)}).fillna(99)

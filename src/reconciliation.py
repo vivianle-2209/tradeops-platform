@@ -1,541 +1,129 @@
-import os
+"""Deterministic reconciliation with complete two-sided evidence."""
 
-import numpy as np
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import pandas as pd
+from src.config import PRICE_TOLERANCE, LATE_CLEARING_SECONDS
+from src.contracts import (RECONCILIATION, BREAK, execution_frame, clearing_frame,
+                           normalize_frame, stable_id)
 
-
-EXECUTIONS_PATH = "data/processed/executions.csv"
-CLEARING_PATH = "data/processed/clearing.csv"
-
-RESULTS_PATH = "data/processed/reconciliation_results.csv"
-BREAKS_PATH = "data/processed/trade_breaks.csv"
-
-
-# --------------------------------------------------
-# Reconciliation configuration
-# --------------------------------------------------
-
-PRICE_TOLERANCE = 0.01
-
-# Normal simulated clearing latency is around
-# 2–8 minutes, so anything above 15 minutes
-# will be considered late.
-LATE_CLEARING_THRESHOLD_SECONDS = 15 * 60
-
-
-# --------------------------------------------------
-# Reconciliation engine
-# --------------------------------------------------
 
 def reconcile_trades(executions, clearing):
-    """
-    Reconcile execution records against clearing records.
-
-    Supports:
-    - missing clearing records
-    - orphan clearing records
-    - duplicate clearing records
-    - quantity mismatches
-    - price mismatches
-    - account mismatches
-    - currency mismatches
-    - side mismatches
-    - failed clearing
-    - late clearing
-    - multiple simultaneous breaks
-    """
-
-    executions = executions.copy()
-    clearing = clearing.copy()
-
-    # --------------------------------------------------
-    # Parse timestamps
-    # --------------------------------------------------
-
-    executions["execution_timestamp"] = pd.to_datetime(
-        executions["execution_timestamp"],
-        errors="coerce",
-        utc=True,
-    )
-
-    clearing["clearing_timestamp"] = pd.to_datetime(
-        clearing["clearing_timestamp"],
-        errors="coerce",
-        utc=True,
-    )
-
-    # --------------------------------------------------
-    # Count clearing records for each trade
-    #
-    # > 1 means DUPLICATE_CLEARING_RECORD
-    # --------------------------------------------------
-
-    clearing_counts = (
-        clearing
-        .groupby("trade_id")
-        .size()
-        .rename("clearing_record_count")
-        .reset_index()
-    )
-
-    # --------------------------------------------------
-    # Select canonical clearing record
-    #
-    # If duplicates exist, compare against the
-    # earliest clearing record while separately
-    # flagging the duplicate.
-    # --------------------------------------------------
-
-    canonical_clearing = (
-        clearing
-        .sort_values("clearing_timestamp")
-        .drop_duplicates(
-            subset=["trade_id"],
-            keep="first",
-        )
-    )
-
-    # --------------------------------------------------
-    # Merge execution and clearing systems
-    # --------------------------------------------------
-
-    merged = executions.merge(
-        canonical_clearing,
-        on="trade_id",
-        how="outer",
-        suffixes=("_exec", "_clear"),
-        indicator=True,
-    )
-
-    merged = merged.merge(
-        clearing_counts,
-        on="trade_id",
-        how="left",
-    )
-
-    merged["clearing_record_count"] = (
-        merged["clearing_record_count"]
-        .fillna(0)
-        .astype(int)
-    )
-
-    # --------------------------------------------------
-    # Calculate operational metrics
-    # --------------------------------------------------
-
-    merged["execution_notional"] = (
-        merged["quantity_exec"]
-        * merged["price_exec"]
-    )
-
-    merged["quantity_difference"] = (
-        merged["quantity_exec"]
-        - merged["quantity_clear"]
-    )
-
-    merged["price_difference"] = (
-        merged["price_exec"]
-        - merged["price_clear"]
-    )
-
-    merged["affected_notional"] = (
-        merged["quantity_difference"].abs()
-        * merged["price_exec"]
-    )
-
-    merged["clearing_latency_seconds"] = (
-        (
-            merged["clearing_timestamp"]
-            - merged["execution_timestamp"]
-        )
-        .dt.total_seconds()
-    )
-
-    # --------------------------------------------------
-    # Detect multiple breaks per trade
-    # --------------------------------------------------
-
-    def detect_breaks(row):
-        breaks = []
-
-        # Execution exists but clearing does not
-        if row["_merge"] == "left_only":
-            return ["MISSING_CLEARING_RECORD"]
-
-        # Clearing exists but execution does not
-        if row["_merge"] == "right_only":
-            return ["MISSING_EXECUTION_RECORD"]
-
-        # Duplicate clearing messages
-        if row["clearing_record_count"] > 1:
-            breaks.append(
-                "DUPLICATE_CLEARING_RECORD"
-            )
-
-        # Quantity
-        if (
-            pd.notna(row["quantity_exec"])
-            and pd.notna(row["quantity_clear"])
-            and row["quantity_exec"]
-            != row["quantity_clear"]
-        ):
-            breaks.append(
-                "QUANTITY_MISMATCH"
-            )
-
-        # Price
-        if (
-            pd.notna(row["price_exec"])
-            and pd.notna(row["price_clear"])
-            and abs(
-                row["price_exec"]
-                - row["price_clear"]
-            )
-            > PRICE_TOLERANCE
-        ):
-            breaks.append(
-                "PRICE_MISMATCH"
-            )
-
-        # Side
-        if (
-            pd.notna(row["side_exec"])
-            and pd.notna(row["side_clear"])
-            and row["side_exec"]
-            != row["side_clear"]
-        ):
-            breaks.append(
-                "SIDE_MISMATCH"
-            )
-
-        # Account
-        if (
-            pd.notna(row["account_exec"])
-            and pd.notna(row["account_clear"])
-            and row["account_exec"]
-            != row["account_clear"]
-        ):
-            breaks.append(
-                "ACCOUNT_MISMATCH"
-            )
-
-        # Currency
-        if (
-            pd.notna(row["currency_exec"])
-            and pd.notna(row["currency_clear"])
-            and row["currency_exec"]
-            != row["currency_clear"]
-        ):
-            breaks.append(
-                "CURRENCY_MISMATCH"
-            )
-
-        # Failed clearing
-        if (
-            pd.notna(
-                row["clearing_status"]
-            )
-            and row["clearing_status"]
-            == "FAILED"
-        ):
-            breaks.append(
-                "SETTLEMENT_FAILED"
-            )
-
-        # Late clearing
-        latency = row[
-            "clearing_latency_seconds"
-        ]
-
-        if (
-            pd.notna(latency)
-            and latency
-            > LATE_CLEARING_THRESHOLD_SECONDS
-        ):
-            breaks.append(
-                "LATE_CLEARING"
-            )
-
-        if not breaks:
-            breaks.append("MATCHED")
-
-        return breaks
-
-    merged["exceptions"] = merged.apply(
-        detect_breaks,
-        axis=1,
-    )
-
-    # --------------------------------------------------
-    # Break count
-    # --------------------------------------------------
-
-    merged["break_count"] = (
-        merged["exceptions"]
-        .apply(
-            lambda x:
-            0
-            if x == ["MATCHED"]
-            else len(x)
-        )
-    )
-
-    # --------------------------------------------------
-    # Reconciliation status
-    # --------------------------------------------------
-
-    merged["reconciliation_status"] = (
-        merged["break_count"]
-        .apply(
-            lambda x:
-            "MATCHED"
-            if x == 0
-            else "BREAK"
-        )
-    )
-
-    # --------------------------------------------------
-    # CSV-friendly exception representation
-    # --------------------------------------------------
-
-    merged["exception_types"] = (
-        merged["exceptions"]
-        .apply("|".join)
-    )
-
-    return merged
+    executions = execution_frame(executions)
+    clearing = clearing_frame(clearing)
+    by_trade = {key: frame for key, frame in clearing.groupby('trade_id')}
+    execution_map = executions.set_index('trade_id').to_dict('index')
+    rows = []
+    for trade_id in sorted(set(execution_map) | set(by_trade)):
+        execution = execution_map.get(trade_id)
+        records = by_trade.get(trade_id)
+        canonical = None if records is None else records.sort_values(
+            ['clearing_timestamp', 'clearing_id']).iloc[0].to_dict()
+        row = dict.fromkeys(RECONCILIATION)
+        row.update(trade_id=trade_id, execution_present=execution is not None,
+                   clearing_present=canonical is not None,
+                   clearing_record_count=0 if records is None else len(records))
+        for side, record in [('exec', execution), ('clear', canonical)]:
+            record = record or {}
+            for name in ['symbol', 'side', 'quantity', 'price', 'currency', 'account', 'venue', 'source']:
+                row[f'{name}_{side}'] = record.get(name)
+        # Canonical symbol is a separate display/scope field. Evidence columns stay null.
+        row['symbol'] = (execution or canonical)['symbol']
+        row['venue'] = (execution or canonical).get('venue')
+        for name in ['market_trade_id', 'order_id', 'trader_id', 'execution_timestamp']:
+            row[name] = (execution or {}).get(name)
+        for name in ['clearing_id', 'clearing_timestamp', 'clearing_status']:
+            row[name] = (canonical or {}).get(name)
+        en = None if execution is None else float(execution['quantity'] * execution['price'])
+        cn = None if canonical is None else float(canonical['quantity'] * canonical['price'])
+        row['execution_notional'], row['clearing_notional'] = en, cn
+        row['trade_exposure'] = max(value for value in [en, cn] if value is not None)
+        exceptions = []
+        if execution is None:
+            exceptions.append('MISSING_EXECUTION_RECORD')
+        elif canonical is None:
+            exceptions.append('MISSING_CLEARING_RECORD')
+        else:
+            row['quantity_difference'] = execution['quantity'] - canonical['quantity']
+            row['price_difference'] = execution['price'] - canonical['price']
+            row['clearing_latency_seconds'] = (canonical['clearing_timestamp'] - execution['execution_timestamp']).total_seconds()
+            if len(records) > 1:
+                exceptions.append('DUPLICATE_CLEARING_RECORD')
+            if row['quantity_difference'] != 0:
+                exceptions.append('QUANTITY_MISMATCH')
+            if abs(row['price_difference']) > PRICE_TOLERANCE:
+                exceptions.append('PRICE_MISMATCH')
+            for name in ['side', 'account', 'currency']:
+                left, right = execution.get(name), canonical.get(name)
+                if pd.notna(left) and pd.notna(right) and left != right:
+                    exceptions.append(name.upper() + '_MISMATCH')
+            if canonical['clearing_status'] == 'FAILED':
+                exceptions.append('SETTLEMENT_FAILED')
+            if row['clearing_latency_seconds'] > LATE_CLEARING_SECONDS:
+                exceptions.append('LATE_CLEARING')
+        impacts = [exception_impact(row, kind) for kind in exceptions]
+        # Trade-level risk proxy: maximum exception impact, never sum duplicated evidence.
+        row['affected_notional'] = max(impacts, default=0.)
+        row['break_count'] = len(exceptions)
+        row['exception_types'] = '|'.join(exceptions) if exceptions else 'MATCHED'
+        row['reconciliation_status'] = 'BREAK' if exceptions else 'MATCHED'
+        rows.append(row)
+    return normalize_frame(pd.DataFrame(rows, columns=RECONCILIATION), RECONCILIATION,
+                           required=('trade_id', 'symbol', 'reconciliation_status'), key=('trade_id',))
 
 
-# --------------------------------------------------
-# Create one row per individual break
-# --------------------------------------------------
+def exception_impact(row, kind):
+    if kind == 'QUANTITY_MISMATCH':
+        return abs(row['quantity_difference']) * row['price_exec']
+    if kind == 'PRICE_MISMATCH':
+        return abs(row['price_difference']) * row['quantity_exec']
+    # Missing side, status, duplication, ownership, direction, currency and latency
+    # expose the full known gross trade notional. This is a risk proxy, not P&L.
+    return row['trade_exposure']
+
 
 def create_break_table(results):
-    """
-    Explode reconciliation results so each
-    operational exception becomes one row.
-    """
-
-    breaks = results[
-        results["reconciliation_status"]
-        == "BREAK"
-    ].copy()
-
-    breaks = breaks.explode(
-        "exceptions"
-    )
-
-    breaks = breaks.rename(
-        columns={
-            "exceptions": "exception_type"
-        }
-    )
-
-    breaks = breaks.reset_index(
-        drop=True
-    )
-
-    # Create unique break IDs
-    breaks["break_id"] = [
-        f"BRK-{i:06d}"
-        for i in range(
-            1,
-            len(breaks) + 1,
-        )
-    ]
-
-    # Logical incident key for downstream
-    # n8n deduplication
-    breaks["dedup_key"] = (
-        breaks["trade_id"]
-        .astype(str)
-        + ":"
-        + breaks["exception_type"]
-        .astype(str)
-    )
-
-    # Initial incident state
-    breaks["break_status"] = "OPEN"
-
-    # Select useful downstream fields
-    desired_columns = [
-        "break_id",
-        "dedup_key",
-        "trade_id",
-        "exception_type",
-        "symbol_exec",
-        "side_exec",
-        "venue",
-        "account_exec",
-        "currency_exec",
-        "quantity_exec",
-        "quantity_clear",
-        "quantity_difference",
-        "price_exec",
-        "price_clear",
-        "price_difference",
-        "execution_notional",
-        "affected_notional",
-        "execution_timestamp",
-        "clearing_timestamp",
-        "clearing_latency_seconds",
-        "clearing_status",
-        "clearing_record_count",
-        "break_status",
-    ]
-
-    # Only select columns that actually exist
-    desired_columns = [
-        column
-        for column in desired_columns
-        if column in breaks.columns
-    ]
-
-    return breaks[
-        desired_columns
-    ]
+    records = []
+    for result in results.to_dict('records'):
+        if result['reconciliation_status'] != 'BREAK':
+            continue
+        for kind in result['exception_types'].split('|'):
+            key = result['trade_id'] + ':' + kind
+            row = dict(result, dedup_key=key, break_id=stable_id('BRK', key),
+                       exception_type=kind, exception_impact=exception_impact(result, kind), break_status='OPEN')
+            records.append(row)
+    return normalize_frame(pd.DataFrame(records, columns=BREAK), BREAK,
+                           required=('trade_id', 'break_id', 'dedup_key', 'exception_type'), key=('dedup_key',))
 
 
-# --------------------------------------------------
-# Main
-# --------------------------------------------------
+def correction_proven(result, kind):
+    """Absence is never correction. Require present, known counterpart evidence."""
+    if result is None:
+        return False
+    if kind == 'MISSING_CLEARING_RECORD':
+        return bool(result['clearing_present'])
+    if kind == 'MISSING_EXECUTION_RECORD':
+        return bool(result['execution_present'])
+    if not (result['execution_present'] and result['clearing_present']):
+        return False
+    if kind in str(result['exception_types']).split('|'):
+        return False
+    if kind == 'SETTLEMENT_FAILED' and result['clearing_status'] != 'CONFIRMED':
+        return False
+    field = {'ACCOUNT_MISMATCH': 'account', 'CURRENCY_MISMATCH': 'currency',
+             'SIDE_MISMATCH': 'side'}.get(kind)
+    if field and any(pd.isna(result[f'{field}_{side}']) for side in ['exec', 'clear']):
+        return False
+    return True
 
-if __name__ == "__main__":
 
-    executions = pd.read_csv(
-        EXECUTIONS_PATH
-    )
-
-    clearing = pd.read_csv(
-        CLEARING_PATH
-    )
-
-    results = reconcile_trades(
-        executions,
-        clearing,
-    )
-
-    break_table = create_break_table(
-        results
-    )
-
-    os.makedirs(
-        "data/processed",
-        exist_ok=True,
-    )
-
-    # Save reconciliation-level results
-    results_to_save = (
-        results
-        .drop(
-            columns=["exceptions"],
-            errors="ignore",
-        )
-    )
-
-    results_to_save.to_csv(
-        RESULTS_PATH,
-        index=False,
-    )
-
-    # Save one-row-per-break table
-    break_table.to_csv(
-        BREAKS_PATH,
-        index=False,
-    )
-
-    # --------------------------------------------------
-    # Console reporting
-    # --------------------------------------------------
-
-    print()
-    print(
-        "TradeOps reconciliation complete"
-    )
-    print("-" * 45)
-
-    total_trades = len(results)
-
-    matched_trades = (
-        results[
-            "reconciliation_status"
-        ]
-        .eq("MATCHED")
-        .sum()
-    )
-
-    broken_trades = (
-        results[
-            "reconciliation_status"
-        ]
-        .eq("BREAK")
-        .sum()
-    )
-
-    print()
-    print(
-        f"Total trades:   {total_trades}"
-    )
-
-    print(
-        f"Matched trades: {matched_trades}"
-    )
-
-    print(
-        f"Broken trades:  {broken_trades}"
-    )
-
-    print(
-        f"Total breaks:   {len(break_table)}"
-    )
-
-    print()
-
-    if len(break_table) > 0:
-
-        print("Breaks by type:")
-
-        print(
-            break_table[
-                "exception_type"
-            ]
-            .value_counts()
-        )
-
-    print()
-    print(
-        "Sample broken trades:"
-    )
-
-    sample_columns = [
-        "trade_id",
-        "exception_types",
-        "break_count",
-        "execution_notional",
-        "affected_notional",
-        "clearing_latency_seconds",
-    ]
-
-    print(
-        results.loc[
-            results[
-                "reconciliation_status"
-            ]
-            == "BREAK",
-            sample_columns,
-        ]
-        .head(10)
-        .to_string(index=False)
-    )
-
-    print()
-    print(
-        "Reconciliation results saved to:"
-    )
-    print(RESULTS_PATH)
-
-    print()
-    print(
-        "Trade breaks saved to:"
-    )
-    print(BREAKS_PATH)
+if __name__ == '__main__':
+    from pathlib import Path
+    results = reconcile_trades(pd.read_csv('data/processed/executions.csv'),
+                               pd.read_csv('data/processed/clearing.csv'))
+    Path('data/processed').mkdir(parents=True, exist_ok=True)
+    results.to_csv('data/processed/reconciliation_results.csv', index=False)
+    create_break_table(results).to_csv('data/processed/trade_breaks.csv', index=False)

@@ -22,7 +22,7 @@ QUEUE_COLUMNS = [
     "priority_rank",
     "break_id",
     "trade_id",
-    "symbol_exec",
+    "symbol",
     "exception_type",
     "severity",
     "severity_score",
@@ -318,7 +318,7 @@ if selected_rows:
 
     symbol = str(
         row.get(
-            "symbol_exec",
+            "symbol",
             "",
         )
     )

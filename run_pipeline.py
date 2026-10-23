@@ -1,539 +1,132 @@
+"""Single-worker TradeOps orchestration; run data never crosses stages via CSV.
+
+The Actions workflow splits persistence and dispatch to durably publish the outbox
+before any external HTTP effect. Local default mode performs both stages.
 """
-TradeOps pipeline orchestrator.
-
-Runs each pipeline stage sequentially and writes a structured
-operational log to logs/pipeline.log.
-
-Logging strategy:
-- INFO: stage start, success, row counts, durations, summaries
-- WARNING: non-fatal anomalies
-- ERROR: failed stages and tracebacks
-- Rotating log file to prevent unbounded growth
-"""
-
 from __future__ import annotations
-
+import argparse
+from dataclasses import replace
 import logging
-import os
-import subprocess
-import sys
-import time
 from logging.handlers import RotatingFileHandler
+import time
 from pathlib import Path
 
+import pandas as pd
+from dotenv import load_dotenv
+from src.cleaning import clean_trades
+from src.config import PROJECT_ROOT, Settings
+from src.contracts import RunContext, RunStatus, EXECUTION, CLEARING, normalize_frame, utc_now
+from src.enrich_executions import enrich_executions
+from src.generate_clearing import generate_clearing
+from src.ingestion import ingest
+from src.load_database import (persist_run, record_failure, existing_execution_ids, update_dispatch_status)
+from src.send_to_n8n import dispatch_breaks
 
-# ==================================================
-# Paths
-# ==================================================
-
-PROJECT_ROOT = (
-    Path(__file__)
-    .resolve()
-    .parent
-)
-
-LOG_DIR = (
-    PROJECT_ROOT
-    / "logs"
-)
-
-LOG_FILE = (
-    LOG_DIR
-    / "pipeline.log"
-)
+HEALTHY = {RunStatus.SUCCESS.value, RunStatus.SUCCESS_NO_DATA.value}
 
 
-# ==================================================
-# Pipeline stages
-# ==================================================
-
-PIPELINE_STAGES = [
-    (
-        "Ingestion",
-        "src/ingestion.py",
-    ),
-    (
-        "Cleaning",
-        "src/cleaning.py",
-    ),
-    (
-        "Execution enrichment",
-        "src/enrich_executions.py",
-    ),
-    (
-        "Clearing generation",
-        "src/generate_clearing.py",
-    ),
-    (
-        "Reconciliation",
-        "src/reconciliation.py",
-    ),
-    (
-        "Severity scoring",
-        "src/severity.py",
-    ),
-    (
-        "SLA processing",
-        "src/sla.py",
-    ),
-    (
-        "DuckDB load",
-        "src/load_database.py",
-    ),
-    (
-        "n8n dispatch",
-        "src/send_to_n8n.py",
-    ),
-]
-
-
-# ==================================================
-# Logging
-# ==================================================
-
-def build_logger() -> logging.Logger:
-    """
-    Configure console + rotating file logging.
-    """
-
-    LOG_DIR.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-
-    logger = logging.getLogger(
-        "tradeops_pipeline"
-    )
-
-
-    logger.setLevel(
-        logging.INFO
-    )
-
-
-    # Prevent duplicated handlers if imported/rerun.
-    logger.handlers.clear()
-
-
-    formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)s | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
-
-
-    # --------------------------------------------------
-    # Rotating file handler
-    # --------------------------------------------------
-
-    file_handler = RotatingFileHandler(
-        LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=5,
-        encoding="utf-8",
-    )
-
-    file_handler.setLevel(
-        logging.INFO
-    )
-
-    file_handler.setFormatter(
-        formatter
-    )
-
-
-    # --------------------------------------------------
-    # Console handler
-    # --------------------------------------------------
-
-    console_handler = logging.StreamHandler(
-        sys.stdout
-    )
-
-    console_handler.setLevel(
-        logging.INFO
-    )
-
-    console_handler.setFormatter(
-        formatter
-    )
-
-
-    logger.addHandler(
-        file_handler
-    )
-
-    logger.addHandler(
-        console_handler
-    )
-
-
+def build_logger():
+    logger = logging.getLogger('tradeops_pipeline')
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        directory = PROJECT_ROOT / 'logs'
+        directory.mkdir(exist_ok=True)
+        handlers = [logging.StreamHandler(), RotatingFileHandler(directory / 'pipeline.log',
+                    maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')]
+        for handler in handlers:
+            handler.setFormatter(logging.Formatter('%(asctime)s | %(levelname)s | %(message)s'))
+            logger.addHandler(handler)
     return logger
 
 
-LOGGER = build_logger()
-
-
-# ==================================================
-# Helpers
-# ==================================================
-
-def extract_summary_lines(
-    output: str,
-) -> list[str]:
-    """
-    Keep only operationally useful summary lines.
-
-    This avoids dumping entire dataframes or verbose debug output
-    into the production pipeline log.
-    """
-
-    if not output:
-        return []
-
-
-    useful_keywords = [
-        "Rows retrieved:",
-        "Raw rows:",
-        "Clean rows:",
-        "Execution rows:",
-        "Clearing rows:",
-        "Matched trades:",
-        "Broken trades:",
-        "Total trades:",
-        "Total breaks:",
-        "Breaks scored:",
-        "Current breaks:",
-        "Lifecycle records:",
-        "Lifecycle OPEN:",
-        "Lifecycle RESOLVED:",
-        "Eligible:",
-        "Sent:",
-        "Skipped:",
-        "Failed:",
-        "Database saved to:",
-        "Breaks tracked:",
-    ]
-
-
-    summaries = []
-
-
-    for raw_line in output.splitlines():
-
-        line = raw_line.strip()
-
-
-        if not line:
-            continue
-
-
-        if any(
-            keyword in line
-            for keyword in useful_keywords
-        ):
-
-            summaries.append(
-                line
-            )
-
-
-    return summaries
-
-
-def run_stage(
-    stage_name: str,
-    script_path: str,
-) -> tuple[bool, float]:
-    """
-    Run one pipeline stage.
-
-    Returns:
-        success
-        duration_seconds
-    """
-
+def execute_pipeline(settings, run, *, start=None, end=None, persist_only=False,
+                     client=None, dispatch_client=None):
+    """Inject clients in tests. Neither importing nor constructing settings calls APIs."""
+    logger = build_logger()
     started = time.perf_counter()
-
-
-    LOGGER.info(
-        "START | %s",
-        stage_name,
-    )
-
-
-    script = (
-        PROJECT_ROOT
-        / script_path
-    )
-
-
-    if not script.exists():
-
-        duration = (
-            time.perf_counter()
-            - started
-        )
-
-
-        LOGGER.error(
-            (
-                "FAILED | %s | "
-                "script_not_found=%s | "
-                "duration=%.2fs"
-            ),
-            stage_name,
-            script,
-            duration,
-        )
-
-
-        return (
-            False,
-            duration,
-        )
-
-
+    logger.info('START | run_id=%s', run.run_id)
+    # A committed replay must not fetch/reroll any source data.
+    import duckdb
+    if Path(settings.db_path).exists():
+        with duckdb.connect(str(settings.db_path), read_only=True) as con:
+            exists = con.execute("SELECT COUNT(*) FROM information_schema.tables WHERE table_name='schema_migrations'").fetchone()[0]
+            committed = exists and con.execute('SELECT COUNT(*) FROM pipeline_runs WHERE run_id=? AND state_committed=TRUE', [run.run_id]).fetchone()[0]
+        if committed:
+            if persist_only:
+                with duckdb.connect(str(settings.db_path), read_only=True) as con:
+                    return con.execute('SELECT ingestion_status FROM pipeline_runs WHERE run_id=?', [run.run_id]).fetchone()[0]
+            result = dispatch_breaks(settings, client=dispatch_client)
+            return update_dispatch_status(settings.db_path, run.run_id, result)
     try:
-
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-            ],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=os.environ.copy(),
-        )
-
-
-    except Exception:
-
-        duration = (
-            time.perf_counter()
-            - started
-        )
-
-
-        LOGGER.exception(
-            (
-                "FAILED | %s | "
-                "subprocess_exception | "
-                "duration=%.2fs"
-            ),
-            stage_name,
-            duration,
-        )
-
-
-        return (
-            False,
-            duration,
-        )
-
-
-    duration = (
-        time.perf_counter()
-        - started
-    )
-
-
-    # --------------------------------------------------
-    # Successful stage
-    # --------------------------------------------------
-
-    if result.returncode == 0:
-
-        summaries = (
-            extract_summary_lines(
-                result.stdout
-            )
-        )
-
-
-        for summary in summaries:
-
-            LOGGER.info(
-                "%s | %s",
-                stage_name,
-                summary,
-            )
-
-
-        LOGGER.info(
-            (
-                "SUCCESS | %s | "
-                "duration=%.2fs"
-            ),
-            stage_name,
-            duration,
-        )
-
-
-        return (
-            True,
-            duration,
-        )
-
-
-    # --------------------------------------------------
-    # Failed stage
-    # --------------------------------------------------
-
-    LOGGER.error(
-        (
-            "FAILED | %s | "
-            "exit_code=%s | "
-            "duration=%.2fs"
-        ),
-        stage_name,
-        result.returncode,
-        duration,
-    )
-
-
-    if result.stdout.strip():
-
-        LOGGER.error(
-            "%s | STDOUT\n%s",
-            stage_name,
-            result.stdout.strip(),
-        )
-
-
-    if result.stderr.strip():
-
-        LOGGER.error(
-            "%s | STDERR\n%s",
-            stage_name,
-            result.stderr.strip(),
-        )
-
-
-    return (
-        False,
-        duration,
-    )
-
-
-# ==================================================
-# Pipeline
-# ==================================================
-
-def main() -> int:
-    """
-    Run the complete TradeOps pipeline.
-    """
-
-    pipeline_started = (
-        time.perf_counter()
-    )
-
-
-    LOGGER.info(
-        "=" * 72
-    )
-
-
-    LOGGER.info(
-        "TRADEOPS PIPELINE START"
-    )
-
-
-    LOGGER.info(
-        "python=%s",
-        sys.executable,
-    )
-
-
-    completed = 0
-
-
-    for (
-        stage_name,
-        script_path,
-    ) in PIPELINE_STAGES:
-
-        success, _ = run_stage(
-            stage_name,
-            script_path,
-        )
-
-
-        if not success:
-
-            total_duration = (
-                time.perf_counter()
-                - pipeline_started
-            )
-
-
-            LOGGER.error(
-                "TRADEOPS PIPELINE FAILED"
-            )
-
-
-            LOGGER.error(
-                (
-                    "COMPLETED | %s/%s | "
-                    "duration=%.2fs"
-                ),
-                completed,
-                len(
-                    PIPELINE_STAGES
-                ),
-                total_duration,
-            )
-
-
-            LOGGER.info(
-                "=" * 72
-            )
-
-
-            return 1
-
-
-        completed += 1
-
-
-    total_duration = (
-        time.perf_counter()
-        - pipeline_started
-    )
-
-
-    LOGGER.info(
-        "TRADEOPS PIPELINE COMPLETE"
-    )
-
-
-    LOGGER.info(
-        (
-            "COMPLETED | %s/%s | "
-            "duration=%.2fs"
-        ),
-        completed,
-        len(
-            PIPELINE_STAGES
-        ),
-        total_duration,
-    )
-
-
-    LOGGER.info(
-        "=" * 72
-    )
-
-
-    return 0
-
-
-if __name__ == "__main__":
-
-    raise SystemExit(
-        main()
-    )
+        batch = ingest(settings, start=start, end=end, client=client)
+    except Exception as exc:
+        logger.exception('FAILED | ingestion | run_id=%s', run.run_id)
+        record_failure(run, RunStatus.INGESTION_FAILED, settings=settings, error=type(exc).__name__)
+        return RunStatus.INGESTION_FAILED.value
+    if batch.errors:
+        record_failure(run, batch.status, settings=settings, errors=batch.errors)
+        logger.error('%s | run_id=%s | failed_symbols=%s', batch.status.value, run.run_id, list(batch.errors))
+        # Previously committed delivery remains independent of source availability.
+        if not persist_only:
+            result = dispatch_breaks(settings, client=dispatch_client)
+            update_dispatch_status(settings.db_path, run.run_id, result)
+        return batch.status.value
+    try:
+        executions = (normalize_frame(pd.DataFrame(), EXECUTION) if batch.trades.empty
+                      else enrich_executions(clean_trades(batch.trades)))
+        new = executions[~executions.trade_id.isin(existing_execution_ids(settings.db_path))]
+        clearing = generate_clearing(new) if not new.empty else normalize_frame(pd.DataFrame(), CLEARING)
+    except Exception as exc:
+        logger.exception('FAILED | validation | run_id=%s', run.run_id)
+        record_failure(run, RunStatus.VALIDATION_FAILED, settings=settings, error=type(exc).__name__)
+        return RunStatus.VALIDATION_FAILED.value
+    try:
+        snapshot = persist_run(executions, clearing, run=run, settings=settings,
+                               checkpoints=batch.checkpoints, ingestion_status=batch.status,
+                               advance_checkpoints=start is None)
+    except Exception as exc:
+        logger.exception('FAILED | database | run_id=%s', run.run_id)
+        try:
+            record_failure(run, RunStatus.DATABASE_FAILED, settings=settings, error=type(exc).__name__)
+        except Exception:
+            logger.exception('Could not persist failure metadata | run_id=%s', run.run_id)
+        return RunStatus.DATABASE_FAILED.value
+    status = batch.status.value
+    if not persist_only:
+        result = dispatch_breaks(settings, client=dispatch_client)
+        status = update_dispatch_status(settings.db_path, run.run_id, result)
+    logger.info('%s | run_id=%s | snapshot_id=%s | duration=%.2fs',
+                status, run.run_id, snapshot, time.perf_counter()-started)
+    return status
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--persist-only', action='store_true')
+    mode.add_argument('--dispatch-only', action='store_true')
+    parser.add_argument('--run-id', help='Reuse the same ID when retrying the same logical run')
+    parser.add_argument('--start', help='UTC replay/backfill start; does not advance live checkpoints')
+    parser.add_argument('--end', help='UTC end (default current time)')
+    parser.add_argument('--symbols', help='Comma-separated source symbols')
+    parser.add_argument('--db-path', type=Path)
+    args = parser.parse_args(argv)
+    if args.dispatch_only and not args.run_id:
+        parser.error('--dispatch-only requires --run-id')
+    load_dotenv()
+    settings = Settings.from_env()
+    if args.db_path:
+        settings = replace(settings, db_path=args.db_path)
+    if args.symbols:
+        settings = replace(settings, symbols=tuple(s.strip().upper() for s in args.symbols.split(',')))
+    run = RunContext(run_id=args.run_id) if args.run_id else RunContext()
+    if args.dispatch_only:
+        status = update_dispatch_status(settings.db_path, run.run_id, dispatch_breaks(settings))
+    else:
+        status = execute_pipeline(settings, run, start=args.start, end=args.end, persist_only=args.persist_only)
+    print(f'TradeOps {status} | run_id={run.run_id}')
+    return 0 if status in HEALTHY else 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,6 +1,14 @@
+
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import os
 
 import pandas as pd
+from src.contracts import trade_identity
+from src.config import Settings
 
 
 RAW_PATH = (
@@ -51,6 +59,7 @@ def clean_trades(
         "price",
         "quantity",
         "execution_timestamp",
+        "venue",
     ]
 
 
@@ -109,7 +118,7 @@ def clean_trades(
 
     df["symbol"] = (
         df["symbol"]
-        .astype(str)
+        .astype("string")
         .str.strip()
         .str.upper()
     )
@@ -156,16 +165,20 @@ def clean_trades(
     # Remove exact duplicates
     # --------------------------------------------------
 
-    df = (
-        df
-        .drop_duplicates()
-        .copy()
-    )
+    # Conditions from the API are lists; serialize before duplicate comparison.
+    import json
+    df["trade_conditions"] = df["trade_conditions"].map(
+        lambda value: json.dumps(value) if isinstance(value, list) else value)
 
 
     # --------------------------------------------------
     # Remove invalid critical fields
     # --------------------------------------------------
+
+    if df[required].isna().any().any() or df["symbol"].str.strip().eq("").any():
+        raise ValueError("Invalid required source fields; checkpoint must not advance")
+    if df["price"].le(0).any() or df["quantity"].le(0).any():
+        raise ValueError("Nonpositive source economics; checkpoint must not advance")
 
     df = df.dropna(
         subset=[
@@ -217,13 +230,13 @@ def clean_trades(
     # Internal TradeOps trade ID
     # --------------------------------------------------
 
-    df["trade_id"] = [
-        f"TRD-{i:06d}"
-        for i in range(
-            1,
-            len(df) + 1,
-        )
-    ]
+    if "source" not in df:
+        df["source"] = Settings.source
+    df["market_trade_id"] = df["market_trade_id"].astype("string")
+    df["trade_id"] = [trade_identity(row.source, row.symbol, row.market_trade_id,
+                         row.execution_timestamp, row.venue)
+                      for row in df.itertuples()]
+    df = df.drop_duplicates("trade_id", keep="last")
 
 
     # --------------------------------------------------
@@ -252,6 +265,7 @@ def clean_trades(
     df = df[
         [
             "trade_id",
+            "source",
             "market_trade_id",
             "symbol",
             "quantity",

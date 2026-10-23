@@ -31,6 +31,7 @@ from tradeops_ui.components import (
 )
 
 from tradeops_ui.data import (
+    total_exposure, exposure_by_group,
     get_context,
 )
 
@@ -55,7 +56,7 @@ from tradeops_ui.theme import (
 SLA_TABLE_COLUMNS = [
     "break_id",
     "trade_id",
-    "symbol_exec",
+    "symbol",
     "exception_type",
     "severity",
     "severity_score",
@@ -73,7 +74,7 @@ CONCENTRATION_DIMENSIONS = {
         "exception_type",
 
     "Symbol":
-        "symbol_exec",
+        "symbol",
 
     "Venue":
         "venue",
@@ -211,7 +212,7 @@ with st.container(
 
 
     if (
-        "symbol_exec"
+        "symbol"
         not in filtered.columns
     ):
 
@@ -249,7 +250,7 @@ with st.container(
         symbol_summary = (
             working
             .groupby(
-                "symbol_exec",
+                "symbol",
                 dropna=False,
             )
             .agg(
@@ -321,10 +322,10 @@ with st.container(
 
 
         symbol_summary[
-            "symbol_exec"
+            "symbol"
         ] = (
             symbol_summary[
-                "symbol_exec"
+                "symbol"
             ]
             .fillna(
                 "UNKNOWN"
@@ -350,10 +351,12 @@ with st.container(
         )
 
 
+        symbol_summary['affected_notional'] = symbol_summary['symbol'].map(exposure_by_group(working, 'symbol')).fillna(0)
+
         display_summary = (
             symbol_summary.rename(
                 columns={
-                    "symbol_exec":
+                    "symbol":
                         "Symbol",
 
                     "breaks":
@@ -678,7 +681,7 @@ with st.container(
                 ),
                 help=(
                     "Affected = mismatched notional; "
-                    "Gross = full execution notional"
+                    "Gross = full known trade notional"
                 ),
             )
         )
@@ -707,7 +710,7 @@ with st.container(
 
 
         measure = (
-            "execution_notional"
+            "trade_exposure"
             if gross
             else "affected_notional"
         )
@@ -735,9 +738,7 @@ with st.container(
             )
 
 
-            total = float(
-                exposure_values.sum()
-            )
+            total = total_exposure(filtered, measure)
 
 
             if total <= 0:
@@ -761,23 +762,7 @@ with st.container(
                 ] = exposure_values
 
 
-                grouped = (
-                    concentration_frame
-                    .groupby(
-                        concentration_frame[
-                            column
-                        ]
-                        .fillna(
-                            "UNKNOWN"
-                        )
-                    )[
-                        measure
-                    ]
-                    .sum()
-                    .sort_values(
-                        ascending=False
-                    )
-                )
+                grouped = exposure_by_group(concentration_frame, column, measure).sort_values(ascending=False)
 
 
                 top3_share = (

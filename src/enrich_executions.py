@@ -1,3 +1,9 @@
+
+if __package__ in (None, ""):
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 import os
 import random
 
@@ -20,13 +26,8 @@ OUTPUT_PATH = (
 # Reproducibility
 # --------------------------------------------------
 
-random.seed(
-    42
-)
 
-np.random.seed(
-    42
-)
+
 
 
 # --------------------------------------------------
@@ -49,129 +50,19 @@ TRADERS = [
 ]
 
 
-def enrich_executions(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Add simulated internal TradeOps attributes
-    to cleaned market trade records.
-    """
-
+def enrich_executions(df: pd.DataFrame) -> pd.DataFrame:
+    """Synthetic attributes keyed by permanent identity, independent of batch/order."""
+    from src.contracts import execution_frame, stable_id
     df = df.copy()
+    seeds = df['trade_id'].map(lambda value: int(stable_id('ATTR', value).split('-')[1][:16], 16))
+    df['side'] = seeds.map(lambda value: ['BUY', 'SELL'][value % 2])
+    df['account'] = seeds.map(lambda value: ACCOUNTS[(value // 2) % len(ACCOUNTS)])
+    df['trader_id'] = seeds.map(lambda value: TRADERS[(value // 8) % len(TRADERS)])
+    df['order_id'] = df['trade_id'].map(lambda value: stable_id('ORD', value))
+    df['record_source'] = 'EXECUTION'
+    df['execution_notional'] = df['quantity'] * df['price']
+    return execution_frame(df)
 
-
-    # --------------------------------------------------
-    # Simulated BUY / SELL direction
-    # --------------------------------------------------
-
-    df["side"] = (
-        np.random.choice(
-            [
-                "BUY",
-                "SELL",
-            ],
-            size=len(df),
-        )
-    )
-
-
-    # --------------------------------------------------
-    # Synthetic account ownership
-    # --------------------------------------------------
-
-    df["account"] = (
-        np.random.choice(
-            ACCOUNTS,
-            size=len(df),
-        )
-    )
-
-
-    # --------------------------------------------------
-    # Synthetic trader ownership
-    # --------------------------------------------------
-
-    df["trader_id"] = (
-        np.random.choice(
-            TRADERS,
-            size=len(df),
-        )
-    )
-
-
-    # --------------------------------------------------
-    # Internal order IDs
-    # --------------------------------------------------
-
-    df["order_id"] = [
-        f"ORD-{i:06d}"
-        for i in range(
-            1,
-            len(df) + 1,
-        )
-    ]
-
-
-    # --------------------------------------------------
-    # Record source
-    # --------------------------------------------------
-
-    df[
-        "record_source"
-    ] = "EXECUTION"
-
-
-    # --------------------------------------------------
-    # Ensure execution notional exists
-    # --------------------------------------------------
-
-    if (
-        "execution_notional"
-        not in df.columns
-    ):
-
-        df[
-            "execution_notional"
-        ] = (
-            pd.to_numeric(
-                df["quantity"],
-                errors="coerce",
-            )
-            *
-            pd.to_numeric(
-                df["price"],
-                errors="coerce",
-            )
-        )
-
-
-    # --------------------------------------------------
-    # Final execution schema
-    # --------------------------------------------------
-
-    df = df[
-        [
-            "record_source",
-            "trade_id",
-            "order_id",
-            "market_trade_id",
-            "symbol",
-            "side",
-            "quantity",
-            "price",
-            "execution_notional",
-            "currency",
-            "account",
-            "venue",
-            "execution_timestamp",
-            "trader_id",
-            "trade_conditions",
-            "tape",
-        ]
-    ]
-
-
-    return df
 
 
 if __name__ == "__main__":

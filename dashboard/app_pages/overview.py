@@ -20,6 +20,7 @@ from tradeops_ui.components import (
 )
 
 from tradeops_ui.data import (
+    total_exposure, exposure_by_group,
     get_context,
 )
 
@@ -313,7 +314,7 @@ if (
     if (
         reconciliation.empty
         or
-        "symbol_exec"
+        "symbol"
         not in reconciliation.columns
     ):
 
@@ -327,7 +328,7 @@ if (
         activity = (
             reconciliation[
                 [
-                    "symbol_exec",
+                    "symbol",
                     "reconciliation_status",
                 ]
             ]
@@ -336,10 +337,10 @@ if (
 
 
         activity[
-            "symbol_exec"
+            "symbol"
         ] = (
             activity[
-                "symbol_exec"
+                "symbol"
             ]
             .fillna(
                 "UNKNOWN"
@@ -352,7 +353,7 @@ if (
             activity
             .groupby(
                 [
-                    "symbol_exec",
+                    "symbol",
                     "reconciliation_status",
                 ]
             )
@@ -391,6 +392,40 @@ if (
         )
 
 
+        grouped[
+            "BREAK_RATE"
+        ] = (
+            grouped[
+                "BREAK"
+            ]
+            /
+            grouped[
+                "TOTAL"
+            ]
+            .replace(
+                0,
+                pd.NA,
+            )
+            * 100
+        ).fillna(0)
+
+
+        grouped[
+            "MATCH_RATE"
+        ] = (
+            grouped[
+                "MATCHED"
+            ]
+            /
+            grouped[
+                "TOTAL"
+            ]
+            .replace(
+                0,
+                pd.NA,
+            )
+            * 100
+        ).fillna(0)
         grouped = (
             grouped
             .sort_values(
@@ -415,9 +450,43 @@ if (
                 marker_color=(
                     "#171717"
                 ),
+                customdata=[
+                    [
+                        int(
+                            grouped.loc[
+                                symbol,
+                                "TOTAL",
+                            ]
+                        ),
+                        int(
+                            grouped.loc[
+                                symbol,
+                                "BREAK",
+                            ]
+                        ),
+                        float(
+                            grouped.loc[
+                                symbol,
+                                "MATCH_RATE",
+                            ]
+                        ),
+                        float(
+                            grouped.loc[
+                                symbol,
+                                "BREAK_RATE",
+                            ]
+                        ),
+                    ]
+                    for symbol
+                    in grouped.index
+                ],
                 hovertemplate=(
                     "<b>%{x}</b><br>"
-                    "Matched: %{y:,}"
+                    "Matched trades: %{y:,}<br>"
+                    "Broken trades: %{customdata[1]:,}<br>"
+                    "Total trades: %{customdata[0]:,}<br>"
+                    "Match rate: %{customdata[2]:.2f}%<br>"
+                    "Break rate: %{customdata[3]:.2f}%"
                     "<extra></extra>"
                 ),
             )
@@ -434,9 +503,43 @@ if (
                 marker_color=(
                     "#ff4da6"
                 ),
+                customdata=[
+                    [
+                        int(
+                            grouped.loc[
+                                symbol,
+                                "TOTAL",
+                            ]
+                        ),
+                        int(
+                            grouped.loc[
+                                symbol,
+                                "MATCHED",
+                            ]
+                        ),
+                        float(
+                            grouped.loc[
+                                symbol,
+                                "MATCH_RATE",
+                            ]
+                        ),
+                        float(
+                            grouped.loc[
+                                symbol,
+                                "BREAK_RATE",
+                            ]
+                        ),
+                    ]
+                    for symbol
+                    in grouped.index
+                ],
                 hovertemplate=(
                     "<b>%{x}</b><br>"
-                    "Broken: %{y:,}"
+                    "Broken trades: %{y:,}<br>"
+                    "Matched trades: %{customdata[1]:,}<br>"
+                    "Total trades: %{customdata[0]:,}<br>"
+                    "Match rate: %{customdata[2]:.2f}%<br>"
+                    "Break rate: %{customdata[3]:.2f}%"
                     "<extra></extra>"
                 ),
             )
@@ -558,19 +661,7 @@ else:
         )
 
 
-        exposure_by_symbol = (
-            exposure
-            .groupby(
-                "symbol_exec",
-                dropna=False,
-            )[
-                "affected_notional"
-            ]
-            .sum()
-            .sort_values(
-                ascending=False
-            )
-        )
+        exposure_by_symbol = exposure_by_group(exposure, 'symbol').sort_values(ascending=False)
 
 
         exposure_by_symbol.index = (
@@ -752,21 +843,7 @@ else:
     )
 
 
-scope_affected = (
-    pd.to_numeric(
-        filtered[
-            "affected_notional"
-        ],
-        errors="coerce",
-    )
-    .fillna(0)
-    .sum()
-    if (
-        "affected_notional"
-        in filtered.columns
-    )
-    else 0
-)
+scope_affected = total_exposure(filtered)
 
 
 stat_strip(
@@ -856,25 +933,29 @@ with left:
         )
 
 
-        fig_break_type.update_layout(
-            height=FIG_HEIGHT,
-            margin=dict(
-                l=20,
-                r=20,
-                t=25,
-                b=45,
-            ),
-        )
+        if fig_break_type is not None:
+            fig_break_type.update_layout(
+                height=FIG_HEIGHT,
+                margin=dict(
+                    l=20,
+                    r=20,
+                    t=25,
+                    b=45,
+                ),
+            )
 
 
-        st.plotly_chart(
-            fig_break_type,
-            width="stretch",
-            config={
-                "displayModeBar": False,
-            },
-            key="ov_by_type",
-        )
+        if fig_break_type is None:
+            empty_state("No breaks match the current filters.")
+        else:
+            st.plotly_chart(
+                fig_break_type,
+                width="stretch",
+                config={
+                    "displayModeBar": False,
+                },
+                key="ov_by_type",
+            )
 
 
 # Severity donut
@@ -901,46 +982,51 @@ with right:
         )
 
 
-        fig_severity.update_traces(
-            domain=dict(
-                x=[
-                    0.18,
-                    0.82,
-                ],
-                y=[
-                    0.18,
-                    0.95,
-                ],
+        if fig_severity is not None:
+            fig_severity.update_traces(
+                domain=dict(
+                    x=[
+                        0.18,
+                        0.82,
+                    ],
+                    y=[
+                        0.18,
+                        0.95,
+                    ],
+                )
             )
-        )
 
 
-        fig_severity.update_layout(
-            height=FIG_HEIGHT,
-            margin=dict(
-                l=15,
-                r=15,
-                t=15,
-                b=70,
-            ),
-            legend=dict(
-                orientation="h",
-                x=0.5,
-                xanchor="center",
-                y=-0.08,
-                yanchor="top",
-            ),
-        )
+        if fig_severity is not None:
+            fig_severity.update_layout(
+                height=FIG_HEIGHT,
+                margin=dict(
+                    l=15,
+                    r=15,
+                    t=15,
+                    b=70,
+                ),
+                legend=dict(
+                    orientation="h",
+                    x=0.5,
+                    xanchor="center",
+                    y=-0.08,
+                    yanchor="top",
+                ),
+            )
 
 
-        st.plotly_chart(
-            fig_severity,
-            width="stretch",
-            config={
-                "displayModeBar": False,
-            },
-            key="ov_severity",
-        )
+        if fig_severity is None:
+            empty_state("No breaks match the current filters.")
+        else:
+            st.plotly_chart(
+                fig_severity,
+                width="stretch",
+                config={
+                    "displayModeBar": False,
+                },
+                key="ov_severity",
+            )
 
 
 # --------------------------------------------------
@@ -977,41 +1063,45 @@ with left:
         )
 
 
-        fig_venue.update_layout(
-            height=(
-                FIG_HEIGHT
-                - 30
-            ),
-            margin=dict(
-                l=20,
-                r=20,
-                t=20,
-                b=80,
-            ),
-            paper_bgcolor=(
-                "rgba(0,0,0,0)"
-            ),
-            plot_bgcolor=(
-                "rgba(0,0,0,0)"
-            ),
-            legend=dict(
-                orientation="h",
-                x=0.5,
-                xanchor="center",
-                y=-0.12,
-                yanchor="top",
-            ),
-        )
+        if fig_venue is not None:
+            fig_venue.update_layout(
+                height=(
+                    FIG_HEIGHT
+                    - 30
+                ),
+                margin=dict(
+                    l=20,
+                    r=20,
+                    t=20,
+                    b=80,
+                ),
+                paper_bgcolor=(
+                    "rgba(0,0,0,0)"
+                ),
+                plot_bgcolor=(
+                    "rgba(0,0,0,0)"
+                ),
+                legend=dict(
+                    orientation="h",
+                    x=0.5,
+                    xanchor="center",
+                    y=-0.12,
+                    yanchor="top",
+                ),
+            )
 
 
-        st.plotly_chart(
-            fig_venue,
-            width="stretch",
-            config={
-                "displayModeBar": False,
-            },
-            key="ov_venue",
-        )
+        if fig_venue is None:
+            empty_state("No breaks match the current filters.")
+        else:
+            st.plotly_chart(
+                fig_venue,
+                width="stretch",
+                config={
+                    "displayModeBar": False,
+                },
+                key="ov_venue",
+            )
 
 
 # Age distribution
@@ -1038,34 +1128,38 @@ with right:
         )
 
 
-        fig_age.update_layout(
-            height=(
-                FIG_HEIGHT
-                - 30
-            ),
-            margin=dict(
-                l=20,
-                r=20,
-                t=20,
-                b=80,
-            ),
-            paper_bgcolor=(
-                "rgba(0,0,0,0)"
-            ),
-            plot_bgcolor=(
-                "rgba(0,0,0,0)"
-            ),
-        )
+        if fig_age is not None:
+            fig_age.update_layout(
+                height=(
+                    FIG_HEIGHT
+                    - 30
+                ),
+                margin=dict(
+                    l=20,
+                    r=20,
+                    t=20,
+                    b=80,
+                ),
+                paper_bgcolor=(
+                    "rgba(0,0,0,0)"
+                ),
+                plot_bgcolor=(
+                    "rgba(0,0,0,0)"
+                ),
+            )
 
 
-        st.plotly_chart(
-            fig_age,
-            width="stretch",
-            config={
-                "displayModeBar": False,
-            },
-            key="ov_age",
-        )
+        if fig_age is None:
+            empty_state("No breaks match the current filters.")
+        else:
+            st.plotly_chart(
+                fig_age,
+                width="stretch",
+                config={
+                    "displayModeBar": False,
+                },
+                key="ov_age",
+            )
 
 
 # ==================================================
@@ -1189,7 +1283,7 @@ with right:
 
                     '<div>'
 
-                    f'{esc(str(row.get("symbol_exec", "")))}'
+                    f'{esc(str(row.get("symbol", "")))}'
                     ' · '
 
                     f'{esc(str(row["exception_type"]).replace("_", " "))}'
