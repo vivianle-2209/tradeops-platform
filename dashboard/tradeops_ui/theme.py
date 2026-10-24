@@ -125,9 +125,10 @@ APP_CSS = f"""
   width:26px; height:26px; border-radius:7px; background:{BLACK}; color:#FFFFFF; display:grid;
   place-items:center; font-size:12px; font-weight:700;
 }}
-.risk-main b {{ font-size:13px; color:{BLACK}; }}
+.risk-main {{ min-width:0; overflow:hidden; }}
+.risk-main b {{ display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; color:{BLACK}; }}
 .risk-main div {{ font-size:12px; color:{GREY_TEXT}; margin-top:2px; }}
-.risk-side {{ text-align:right; font-variant-numeric:tabular-nums; font-size:13px; font-weight:700; color:{BLACK}; }}
+.risk-side {{ text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums; font-size:13px; font-weight:700; color:{BLACK}; }}
 .risk-side div {{ margin-top:4px; display:flex; gap:4px; justify-content:flex-end; }}
 
 .trade-card {{ background:{CARD}; border-radius:14px; padding:18px 20px; color:#FFFFFF; }}

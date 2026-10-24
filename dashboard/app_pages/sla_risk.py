@@ -435,7 +435,7 @@ with st.container(
                 "Affected Notional":
                     st.column_config.NumberColumn(
                         "Affected Notional",
-                        format="$%.2f",
+                        format="$%,.2f",
                     ),
             },
         )

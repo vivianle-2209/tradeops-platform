@@ -30,6 +30,7 @@ from tradeops_ui.formatting import (
     fmt_int,
     fmt_money,
     fmt_money_compact,
+    fmt_trade_id,
 )
 
 
@@ -1279,7 +1280,8 @@ with right:
 
                     '<div class="risk-main">'
 
-                    f'<b>{esc(row["trade_id"])}</b>'
+                    f'<b title="{esc(row["trade_id"])}">'
+                    f'{esc(fmt_trade_id(row["trade_id"]))}</b>'
 
                     '<div>'
 

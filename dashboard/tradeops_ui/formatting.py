@@ -30,6 +30,12 @@ def fmt_money(value) -> str:
     return f"{sign}${abs(value):,.2f}"
 
 
+def fmt_trade_id(value) -> str:
+    """Compact display label; the permanent ID stays unchanged for lookups."""
+    text = "" if is_missing(value) else str(value)
+    return text if len(text) <= 26 else f"{text[:14]}\N{HORIZONTAL ELLIPSIS}{text[-6:]}"
+
+
 def fmt_money_compact(value) -> str:
     """$1.2M / $350.4K — for KPI cards and chart labels."""
     if is_missing(value):
