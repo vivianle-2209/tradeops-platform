@@ -25,3 +25,5 @@ data/state/
 # AI packages
 .agents
 .claude
+
+data/reset_backup/
